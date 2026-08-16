@@ -21,6 +21,8 @@ import {
   StatTile,
 } from "./viz";
 import PlayerDetailModal from "./PlayerDetailModal";
+import ClassDetailModal from "./ClassDetailModal";
+import Dropdown from "./Dropdown";
 
 type Tab = "overview" | "class" | "players";
 type MetricKey =
@@ -260,6 +262,8 @@ function ClassTab({
 }) {
   const [metric, setMetric] = useState<MetricKey>("kills");
   const [tableSide, setTableSide] = useState<0 | 1>(0);
+  const [selectedCls, setSelectedCls] = useState<string | null>(null);
+  const [selectedPlayer, setSelectedPlayer] = useState<PlayerStats | null>(null);
   const metricLabel = CLASS_METRICS.find((m) => m.key === metric)!.label;
 
   const classes = useMemo(() => {
@@ -404,8 +408,12 @@ function ClassTab({
             </thead>
             <tbody className="tabular-nums">
               {tableRows.map((r) => (
-                <tr key={r.cls} className="border-b border-grid">
-                  <td className="py-2 pr-3">{r.cls}</td>
+                <tr
+                  key={r.cls}
+                  onClick={() => setSelectedCls(r.cls)}
+                  className="cursor-pointer border-b border-grid hover:bg-wash"
+                >
+                  <td className="py-2 pr-3 font-medium">{r.cls}</td>
                   <td className="py-2 pr-3 text-right">{r.count}</td>
                   <td className="py-2 pr-3 text-right">{fmtAvg(r.kills)}</td>
                   <td className="py-2 pr-3 text-right">{fmtAvg(r.deaths)}</td>
@@ -419,8 +427,30 @@ function ClassTab({
             </tbody>
           </table>
         </div>
-        <p className="mt-2 text-xs text-muted">表內數值皆為該職業平均。</p>
+        <p className="mt-2 text-xs text-muted">
+          表內數值皆為該職業平均，點選職業列可查看詳細與成員名單。
+        </p>
       </section>
+
+      {selectedCls && !selectedPlayer && (
+        <ClassDetailModal
+          cls={selectedCls}
+          team={sidePlayers}
+          guildName={tableSide === 0 ? match.allyName : match.enemyName}
+          sideLabel={tableSide === 0 ? "我方" : "對方"}
+          onClose={() => setSelectedCls(null)}
+          onSelectPlayer={(p) => setSelectedPlayer(p)}
+        />
+      )}
+      {selectedPlayer && (
+        <PlayerDetailModal
+          player={selectedPlayer}
+          team={sidePlayers}
+          guildName={tableSide === 0 ? match.allyName : match.enemyName}
+          sideLabel={tableSide === 0 ? "我方" : "對方"}
+          onClose={() => setSelectedPlayer(null)}
+        />
+      )}
     </div>
   );
 }
@@ -452,6 +482,7 @@ function PlayersTab({ match }: { match: MatchDetail }) {
   const [sortKey, setSortKey] = useState<SortKey>("kills");
   const [sortDesc, setSortDesc] = useState(true);
   const [selected, setSelected] = useState<PlayerStats | null>(null);
+  const [clsDetail, setClsDetail] = useState<string | null>(null);
 
   const team = side === 0 ? match.ally : match.enemy;
   const guildName = side === 0 ? match.allyName : match.enemyName;
@@ -523,18 +554,15 @@ function PlayersTab({ match }: { match: MatchDetail }) {
             </button>
           ))}
         </div>
-        <select
+        <Dropdown
           value={clsFilter}
-          onChange={(e) => setClsFilter(e.target.value)}
-          className="rounded-md border border-bdr bg-page px-2.5 py-1.5 text-sm"
-        >
-          <option value="">全部職業</option>
-          {classes.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
+          onChange={setClsFilter}
+          className="w-36"
+          options={[
+            { value: "", label: "全部職業" },
+            ...classes.map((c) => ({ value: c, label: c })),
+          ]}
+        />
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -542,7 +570,7 @@ function PlayersTab({ match }: { match: MatchDetail }) {
           className="w-44 rounded-md border border-bdr bg-page px-3 py-1.5 text-sm outline-none focus:border-accent"
         />
         <span className="ml-auto text-xs text-muted">
-          {rows.length} 位玩家 · 點選列可查看詳細貢獻
+          {rows.length} 位玩家 · 點選列看玩家詳情，點職業看職業詳情
         </span>
       </div>
 
@@ -574,7 +602,17 @@ function PlayersTab({ match }: { match: MatchDetail }) {
                 className="cursor-pointer border-b border-grid hover:bg-wash"
               >
                 <td className="py-2 pr-3 font-medium">{p.name}</td>
-                <td className="py-2 pr-3 text-ink2">{p.cls}</td>
+                <td className="py-2 pr-3">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setClsDetail(p.cls);
+                    }}
+                    className="text-ink2 underline decoration-dotted underline-offset-2 hover:text-accent cursor-pointer"
+                  >
+                    {p.cls}
+                  </button>
+                </td>
                 <td className="py-2 pr-3 text-right">{fmtInt(p.kills)}</td>
                 <td className="py-2 pr-3 text-right">{fmtInt(p.deaths)}</td>
                 <td className="py-2 pr-3 text-right">{fmtInt(p.assists)}</td>
@@ -600,6 +638,16 @@ function PlayersTab({ match }: { match: MatchDetail }) {
         </table>
       </div>
 
+      {clsDetail && !selected && (
+        <ClassDetailModal
+          cls={clsDetail}
+          team={team}
+          guildName={guildName}
+          sideLabel={side === 0 ? "我方" : "對方"}
+          onClose={() => setClsDetail(null)}
+          onSelectPlayer={(p) => setSelected(p)}
+        />
+      )}
       {selected && (
         <PlayerDetailModal
           player={selected}
