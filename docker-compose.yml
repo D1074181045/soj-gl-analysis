@@ -1,8 +1,8 @@
 services:
-  webapp:
+  app:
     build: .
-    image: guild-war-report
-    container_name: guild-war-report
+    image: soj-gl-analysis
+    container_name: soj-gl-analysis
     ports:
       - "3000:3000"
     volumes:
