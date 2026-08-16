@@ -135,6 +135,10 @@ export default function ClassDetailModal({
   const ownColor = sideLabel === "我方" ? ALLY_COLOR : ENEMY_COLOR;
   const oppColor = sideLabel === "我方" ? ENEMY_COLOR : ALLY_COLOR;
 
+  // 成員表格的職業專屬欄位
+  const showPurify = metricAppliesToClass("purify", cls);
+  const showBurn = metricAppliesToClass("burn", cls);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 sm:py-12"
@@ -250,7 +254,13 @@ export default function ClassDetailModal({
                 <th className="py-2 pr-3 text-right font-normal">KDA</th>
                 <th className="py-2 pr-3 text-right font-normal">對玩家傷害</th>
                 <th className="py-2 pr-3 text-right font-normal">治療值</th>
-                <th className="py-2 text-right font-normal">承受傷害</th>
+                <th className={`py-2 text-right font-normal ${showPurify || showBurn ? "pr-3" : ""}`}>
+                  承受傷害
+                </th>
+                {showPurify && (
+                  <th className="py-2 text-right font-normal">化羽/清泉</th>
+                )}
+                {showBurn && <th className="py-2 text-right font-normal">焚骨</th>}
               </tr>
             </thead>
             <tbody className="tabular-nums">
@@ -273,9 +283,18 @@ export default function ClassDetailModal({
                   <td className="py-2 pr-3 text-right" title={fmtInt(p.healing)}>
                     {fmtCompact(p.healing)}
                   </td>
-                  <td className="py-2 text-right" title={fmtInt(p.damageTaken)}>
+                  <td
+                    className={`py-2 text-right ${showPurify || showBurn ? "pr-3" : ""}`}
+                    title={fmtInt(p.damageTaken)}
+                  >
                     {fmtCompact(p.damageTaken)}
                   </td>
+                  {showPurify && (
+                    <td className="py-2 text-right">{fmtInt(p.purify)}</td>
+                  )}
+                  {showBurn && (
+                    <td className="py-2 text-right">{fmtInt(p.burn)}</td>
+                  )}
                 </tr>
               ))}
             </tbody>
