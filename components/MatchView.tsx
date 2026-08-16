@@ -438,6 +438,8 @@ function ClassTab({
           team={sidePlayers}
           guildName={tableSide === 0 ? match.allyName : match.enemyName}
           sideLabel={tableSide === 0 ? "我方" : "對方"}
+          opponents={tableSide === 0 ? match.enemy : match.ally}
+          opponentName={tableSide === 0 ? match.enemyName : match.allyName}
           onClose={() => setSelectedCls(null)}
           onSelectPlayer={(p) => setSelectedPlayer(p)}
         />
@@ -448,6 +450,8 @@ function ClassTab({
           team={sidePlayers}
           guildName={tableSide === 0 ? match.allyName : match.enemyName}
           sideLabel={tableSide === 0 ? "我方" : "對方"}
+          opponents={tableSide === 0 ? match.enemy : match.ally}
+          opponentName={tableSide === 0 ? match.enemyName : match.allyName}
           onClose={() => setSelectedPlayer(null)}
         />
       )}
@@ -644,6 +648,8 @@ function PlayersTab({ match }: { match: MatchDetail }) {
           team={team}
           guildName={guildName}
           sideLabel={side === 0 ? "我方" : "對方"}
+          opponents={side === 0 ? match.enemy : match.ally}
+          opponentName={side === 0 ? match.enemyName : match.allyName}
           onClose={() => setClsDetail(null)}
           onSelectPlayer={(p) => setSelected(p)}
         />
@@ -654,6 +660,8 @@ function PlayersTab({ match }: { match: MatchDetail }) {
           team={team}
           guildName={guildName}
           sideLabel={side === 0 ? "我方" : "對方"}
+          opponents={side === 0 ? match.enemy : match.ally}
+          opponentName={side === 0 ? match.enemyName : match.allyName}
           onClose={() => setSelected(null)}
         />
       )}

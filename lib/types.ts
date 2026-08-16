@@ -53,3 +53,10 @@ export const METRIC_LABELS: Record<string, string> = {
   purify: "化羽/清泉",
   burn: "焚骨",
 };
+
+// 職業專屬指標：化羽/清泉僅素問與潮光有意義，焚骨僅九靈
+export function metricAppliesToClass(key: string, cls: string): boolean {
+  if (key === "purify") return cls === "素問" || cls === "潮光";
+  if (key === "burn") return cls === "九靈";
+  return true;
+}

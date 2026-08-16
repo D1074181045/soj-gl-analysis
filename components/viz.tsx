@@ -27,25 +27,28 @@ export function SeriesLegend({
 }
 
 // 單一指標的雙方對比列：兩條水平長條共用同一比例尺
+// colors 預設為我方藍/對方橘，可依情境調換
 export function CompareRow({
   label,
   a,
   b,
   fmt,
+  colors = [ALLY_COLOR, ENEMY_COLOR],
 }: {
   label: string;
   a: number;
   b: number;
   fmt: (n: number) => string;
+  colors?: [string, string];
 }) {
   const max = Math.max(a, b, 1);
   return (
     <div className="flex items-center gap-3">
-      <span className="w-24 shrink-0 text-sm text-ink2">{label}</span>
+      <span className="w-28 shrink-0 text-sm text-ink2">{label}</span>
       <div className="flex flex-1 flex-col gap-0.5">
         {[
-          { v: a, color: ALLY_COLOR },
-          { v: b, color: ENEMY_COLOR },
+          { v: a, color: colors[0] },
+          { v: b, color: colors[1] },
         ].map((row, i) => (
           <div key={i} className="flex items-center gap-2">
             <div className="h-3.5 flex-1">

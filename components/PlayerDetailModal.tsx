@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo } from "react";
 import type { PlayerStats } from "@/lib/types";
-import { fmtCompact, fmtInt, fmtKda } from "@/lib/format";
-import { ContributionMeter, StatTile } from "./viz";
+import { metricAppliesToClass } from "@/lib/types";
+import { fmtAvg, fmtCompact, fmtInt, fmtKda } from "@/lib/format";
+import { ALLY_COLOR, ENEMY_COLOR, CompareRow, ContributionMeter, SeriesLegend, StatTile } from "./viz";
 
 const CONTRIB_METRICS: { key: keyof PlayerStats; label: string }[] = [
   { key: "kills", label: "擊敗" },
@@ -26,6 +27,23 @@ const VS_CLASS_METRICS: { key: keyof PlayerStats; label: string }[] = [
   { key: "damageTaken", label: "承受傷害" },
 ];
 
+// 與對方同職業平均比較的指標（化羽/焚骨依職業過濾）
+const VS_ENEMY_METRICS: {
+  key: keyof PlayerStats;
+  label: string;
+  fmt: (n: number) => string;
+}[] = [
+  { key: "kills", label: "擊敗", fmt: fmtAvg },
+  { key: "deaths", label: "重傷", fmt: fmtAvg },
+  { key: "assists", label: "助攻", fmt: fmtAvg },
+  { key: "playerDamage", label: "對玩家傷害", fmt: fmtCompact },
+  { key: "buildingDamage", label: "對建築傷害", fmt: fmtCompact },
+  { key: "healing", label: "治療值", fmt: fmtCompact },
+  { key: "damageTaken", label: "承受傷害", fmt: fmtCompact },
+  { key: "purify", label: "化羽/清泉", fmt: fmtAvg },
+  { key: "burn", label: "焚骨", fmt: fmtAvg },
+];
+
 function numOf(p: PlayerStats, key: keyof PlayerStats): number {
   return Number(p[key] ?? 0);
 }
@@ -35,12 +53,16 @@ export default function PlayerDetailModal({
   team,
   guildName,
   sideLabel,
+  opponents,
+  opponentName,
   onClose,
 }: {
   player: PlayerStats;
   team: PlayerStats[];
   guildName: string;
   sideLabel: "我方" | "對方";
+  opponents: PlayerStats[];
+  opponentName: string;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -50,7 +72,10 @@ export default function PlayerDetailModal({
   }, [onClose]);
 
   const contributions = useMemo(() => {
-    return CONTRIB_METRICS.map(({ key, label }) => {
+    return CONTRIB_METRICS.filter(({ key }) =>
+      metricAppliesToClass(key as string, player.cls)
+    )
+      .map(({ key, label }) => {
       const value = numOf(player, key);
       const total = team.reduce((s, p) => s + numOf(p, key), 0);
       const rank =
@@ -80,6 +105,27 @@ export default function PlayerDetailModal({
       return { key, label, value, avg };
     });
   }, [player, classmates]);
+
+  const enemyClassmates = useMemo(
+    () => opponents.filter((p) => p.cls === player.cls),
+    [opponents, player.cls]
+  );
+
+  const vsEnemy = useMemo(() => {
+    return VS_ENEMY_METRICS.filter(({ key }) =>
+      metricAppliesToClass(key as string, player.cls)
+    ).map(({ key, label, fmt }) => {
+      const value = numOf(player, key);
+      const avg =
+        enemyClassmates.reduce((s, p) => s + numOf(p, key), 0) /
+        Math.max(enemyClassmates.length, 1);
+      return { key, label, fmt, value, avg };
+    });
+  }, [player, enemyClassmates]);
+
+  // 本人長條用自己陣營的顏色，對方平均用另一方顏色
+  const ownColor = sideLabel === "我方" ? ALLY_COLOR : ENEMY_COLOR;
+  const oppColor = sideLabel === "我方" ? ENEMY_COLOR : ALLY_COLOR;
 
   return (
     <div
@@ -194,6 +240,37 @@ export default function PlayerDetailModal({
             上排（藍）為本人，下排（灰）為同職業平均；右側為相對差異。
           </p>
         </div>
+
+        <h4 className="mb-3 mt-6 text-sm font-semibold text-ink2">
+          與對方同職業平均比較（{opponentName} {player.cls}）
+        </h4>
+        {enemyClassmates.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-baseline px-4 py-5 text-center text-sm text-muted">
+            {opponentName} 沒有{player.cls}玩家，無法比較。
+          </p>
+        ) : (
+          <div className="flex flex-col gap-3.5">
+            <SeriesLegend
+              items={[
+                { label: `${player.name}（本人）`, color: ownColor },
+                {
+                  label: `${opponentName} ${player.cls}平均（${enemyClassmates.length} 人）`,
+                  color: oppColor,
+                },
+              ]}
+            />
+            {vsEnemy.map((m) => (
+              <CompareRow
+                key={m.key}
+                label={m.label}
+                a={m.value}
+                b={m.avg}
+                fmt={m.fmt}
+                colors={[ownColor, oppColor]}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

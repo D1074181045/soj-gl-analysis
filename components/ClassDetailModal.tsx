@@ -2,8 +2,16 @@
 
 import { useEffect, useMemo } from "react";
 import type { PlayerStats } from "@/lib/types";
-import { fmtCompact, fmtInt, fmtKda } from "@/lib/format";
-import { ContributionMeter, StatTile } from "./viz";
+import { metricAppliesToClass } from "@/lib/types";
+import { fmtAvg, fmtCompact, fmtInt, fmtKda } from "@/lib/format";
+import {
+  ALLY_COLOR,
+  ENEMY_COLOR,
+  CompareRow,
+  ContributionMeter,
+  SeriesLegend,
+  StatTile,
+} from "./viz";
 
 const SHARE_METRICS: { key: keyof PlayerStats; label: string }[] = [
   { key: "kills", label: "擊敗" },
@@ -21,11 +29,30 @@ function numOf(p: PlayerStats, key: keyof PlayerStats): number {
   return Number(p[key] ?? 0);
 }
 
+// 與對方同職業比較的指標（平均值；化羽/焚骨依職業過濾）
+const VS_ENEMY_METRICS: {
+  key: keyof PlayerStats;
+  label: string;
+  fmt: (n: number) => string;
+}[] = [
+  { key: "kills", label: "平均擊敗", fmt: fmtAvg },
+  { key: "deaths", label: "平均重傷", fmt: fmtAvg },
+  { key: "assists", label: "平均助攻", fmt: fmtAvg },
+  { key: "playerDamage", label: "平均對玩家傷害", fmt: fmtCompact },
+  { key: "buildingDamage", label: "平均對建築傷害", fmt: fmtCompact },
+  { key: "healing", label: "平均治療值", fmt: fmtCompact },
+  { key: "damageTaken", label: "平均承受傷害", fmt: fmtCompact },
+  { key: "purify", label: "平均化羽/清泉", fmt: fmtAvg },
+  { key: "burn", label: "平均焚骨", fmt: fmtAvg },
+];
+
 export default function ClassDetailModal({
   cls,
   team,
   guildName,
   sideLabel,
+  opponents,
+  opponentName,
   onClose,
   onSelectPlayer,
 }: {
@@ -33,6 +60,8 @@ export default function ClassDetailModal({
   team: PlayerStats[];
   guildName: string;
   sideLabel: "我方" | "對方";
+  opponents: PlayerStats[];
+  opponentName: string;
   onClose: () => void;
   onSelectPlayer: (p: PlayerStats) => void;
 }) {
@@ -57,7 +86,10 @@ export default function ClassDetailModal({
   const shares = useMemo(() => {
     const totalOf = (players: PlayerStats[], key: keyof PlayerStats) =>
       players.reduce((s, p) => s + numOf(p, key), 0);
-    return SHARE_METRICS.map(({ key, label }) => {
+    return SHARE_METRICS.filter(({ key }) =>
+      metricAppliesToClass(key as string, cls)
+    )
+      .map(({ key, label }) => {
       const value = totalOf(members, key);
       const teamTotal = totalOf(team, key);
       const classTotals = allClasses.map((c) =>
@@ -78,6 +110,30 @@ export default function ClassDetailModal({
   const kills = members.reduce((s, p) => s + p.kills, 0);
   const deaths = members.reduce((s, p) => s + p.deaths, 0);
   const assists = members.reduce((s, p) => s + p.assists, 0);
+
+  const enemyMembers = useMemo(
+    () => opponents.filter((p) => p.cls === cls),
+    [opponents, cls]
+  );
+
+  const vsEnemy = useMemo(() => {
+    const avgOf = (players: PlayerStats[], key: keyof PlayerStats) =>
+      players.length
+        ? players.reduce((s, p) => s + numOf(p, key), 0) / players.length
+        : 0;
+    return VS_ENEMY_METRICS.filter(({ key }) =>
+      metricAppliesToClass(key as string, cls)
+    ).map(({ key, label, fmt }) => ({
+      key,
+      label,
+      fmt,
+      a: avgOf(members, key),
+      b: avgOf(enemyMembers, key),
+    }));
+  }, [members, enemyMembers, cls]);
+
+  const ownColor = sideLabel === "我方" ? ALLY_COLOR : ENEMY_COLOR;
+  const oppColor = sideLabel === "我方" ? ENEMY_COLOR : ALLY_COLOR;
 
   return (
     <div
@@ -141,6 +197,44 @@ export default function ClassDetailModal({
             />
           ))}
         </div>
+
+        <h4 className="mb-3 mt-6 text-sm font-semibold text-ink2">
+          與對方{cls}對比（{opponentName}）
+        </h4>
+        {enemyMembers.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-baseline px-4 py-5 text-center text-sm text-muted">
+            {opponentName} 沒有{cls}玩家，無法比較。
+          </p>
+        ) : (
+          <div className="flex flex-col gap-3.5">
+            <SeriesLegend
+              items={[
+                { label: `${guildName}（${members.length} 人）`, color: ownColor },
+                {
+                  label: `${opponentName}（${enemyMembers.length} 人）`,
+                  color: oppColor,
+                },
+              ]}
+            />
+            <CompareRow
+              label="人數"
+              a={members.length}
+              b={enemyMembers.length}
+              fmt={fmtInt}
+              colors={[ownColor, oppColor]}
+            />
+            {vsEnemy.map((m) => (
+              <CompareRow
+                key={m.key}
+                label={m.label}
+                a={m.a}
+                b={m.b}
+                fmt={m.fmt}
+                colors={[ownColor, oppColor]}
+              />
+            ))}
+          </div>
+        )}
 
         <h4 className="mb-3 mt-6 text-sm font-semibold text-ink2">
           職業成員（依擊敗排序，點選可看個人詳情）
