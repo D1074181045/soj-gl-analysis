@@ -1,0 +1,26 @@
+services:
+  webapp:
+    build: .
+    image: guild-war-report
+    container_name: guild-war-report
+    ports:
+      - "3000:3000"
+    volumes:
+      # SQLite 資料庫持久化（named volume；改成 ./data:/app/data 可直接用主機目錄）
+      - app-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  app-data:
