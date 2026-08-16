@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --baseline: #c3c2b7;
+  --bdr: rgba(11, 11, 11, 0.1);
+  --ally: #2a78d6;
+  --enemy: #eb6834;
+  --accent: #2a78d6;
+  --accent-track: #cde2fb;
+  --deemph: #c3c2b7;
+  --good: #006300;
+  --bad: #d03b3b;
+  --wash: rgba(11, 11, 11, 0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --baseline: #383835;
+    --bdr: rgba(255, 255, 255, 0.1);
+    --ally: #3987e5;
+    --enemy: #d95926;
+    --accent: #3987e5;
+    --accent-track: #184f95;
+    --deemph: #52514e;
+    --good: #0ca30c;
+    --bad: #e66767;
+    --wash: rgba(255, 255, 255, 0.06);
+  }
+}
+
+@theme inline {
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-ink2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-grid: var(--grid);
+  --color-baseline: var(--baseline);
+  --color-bdr: var(--bdr);
+  --color-ally: var(--ally);
+  --color-enemy: var(--enemy);
+  --color-accent: var(--accent);
+  --color-accent-track: var(--accent-track);
+  --color-deemph: var(--deemph);
+  --color-good: var(--good);
+  --color-bad: var(--bad);
+  --color-wash: var(--wash);
+  --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang TC",
+    "Microsoft JhengHei", sans-serif;
+}
+
+body {
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
