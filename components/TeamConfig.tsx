@@ -9,6 +9,7 @@ import {
   setTeamAssignmentAction,
 } from "@/lib/actions";
 import Dropdown from "./Dropdown";
+import { sortBy, useSortable } from "./sortable";
 
 type Filter = "all" | "unassigned" | MainTeam;
 
@@ -32,14 +33,21 @@ export default function TeamConfig({
     [roster]
   );
 
+  const sort = useSortable("cls", false);
   const sorted = useMemo(
     () =>
-      [...roster].sort(
-        (a, b) =>
-          a.cls.localeCompare(b.cls, "zh-TW") ||
-          a.name.localeCompare(b.name, "zh-TW")
+      sortBy(
+        roster,
+        (r) =>
+          sort.key === "name"
+            ? r.name
+            : sort.key === "matchCount"
+              ? r.matchCount
+              : r.cls,
+        sort.desc,
+        (a, b) => a.name.localeCompare(b.name, "zh-TW")
       ),
-    [roster]
+    [roster, sort.key, sort.desc]
   );
 
   const counts = useMemo(() => {
@@ -169,9 +177,30 @@ export default function TeamConfig({
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-bdr text-left text-xs text-muted">
-              <th className="px-4 py-2.5 font-normal">玩家</th>
-              <th className="px-3 py-2.5 font-normal">職業</th>
-              <th className="px-3 py-2.5 text-right font-normal">場次</th>
+              <th className="px-4 py-2.5 font-normal">
+                <button
+                  onClick={() => sort.toggle("name", false)}
+                  className="cursor-pointer hover:text-ink"
+                >
+                  玩家{sort.key === "name" && (sort.desc ? " ↓" : " ↑")}
+                </button>
+              </th>
+              <th className="px-3 py-2.5 font-normal">
+                <button
+                  onClick={() => sort.toggle("cls", false)}
+                  className="cursor-pointer hover:text-ink"
+                >
+                  職業{sort.key === "cls" && (sort.desc ? " ↓" : " ↑")}
+                </button>
+              </th>
+              <th className="px-3 py-2.5 text-right font-normal">
+                <button
+                  onClick={() => sort.toggle("matchCount", true)}
+                  className="cursor-pointer hover:text-ink"
+                >
+                  場次{sort.key === "matchCount" && (sort.desc ? " ↓" : " ↑")}
+                </button>
+              </th>
               <th className="px-3 py-2.5 font-normal">主團（必選）</th>
               <th className="px-3 py-2.5 font-normal">副職（可不選）</th>
               <th className="px-3 py-2.5 font-normal"></th>

@@ -12,6 +12,7 @@ import {
   SeriesLegend,
   StatTile,
 } from "./viz";
+import { SortTh, useSortedPlayers } from "./sortable";
 
 const SHARE_METRICS: { key: keyof PlayerStats; label: string }[] = [
   { key: "kills", label: "擊敗" },
@@ -71,11 +72,11 @@ export default function ClassDetailModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const members = useMemo(
-    () =>
-      [...team.filter((p) => p.cls === cls)].sort((a, b) => b.kills - a.kills),
+  const rawMembers = useMemo(
+    () => team.filter((p) => p.cls === cls),
     [team, cls]
   );
+  const { sorted: members, sort } = useSortedPlayers(rawMembers, "kills");
 
   const allClasses = useMemo(
     () => [...new Set(team.map((p) => p.cls))],
@@ -241,26 +242,29 @@ export default function ClassDetailModal({
         )}
 
         <h4 className="mb-3 mt-6 text-sm font-semibold text-ink2">
-          職業成員（依擊敗排序，點選可看個人詳情）
+          職業成員（點欄位標題可排序，點選成員看個人詳情）
         </h4>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-bdr text-left text-xs text-muted">
-                <th className="py-2 pr-3 font-normal">玩家</th>
-                <th className="py-2 pr-3 text-right font-normal">擊敗</th>
-                <th className="py-2 pr-3 text-right font-normal">重傷</th>
-                <th className="py-2 pr-3 text-right font-normal">助攻</th>
-                <th className="py-2 pr-3 text-right font-normal">KDA</th>
-                <th className="py-2 pr-3 text-right font-normal">對玩家傷害</th>
-                <th className="py-2 pr-3 text-right font-normal">治療值</th>
-                <th className={`py-2 text-right font-normal ${showPurify || showBurn ? "pr-3" : ""}`}>
-                  承受傷害
-                </th>
+                <SortTh label="玩家" k="name" sort={sort} numeric={false} />
+                <SortTh label="擊敗" k="kills" sort={sort} />
+                <SortTh label="重傷" k="deaths" sort={sort} />
+                <SortTh label="助攻" k="assists" sort={sort} />
+                <SortTh label="KDA" k="kda" sort={sort} />
+                <SortTh label="對玩家傷害" k="playerDamage" sort={sort} />
+                <SortTh label="治療值" k="healing" sort={sort} />
+                <SortTh
+                  label="承受傷害"
+                  k="damageTaken"
+                  sort={sort}
+                  last={!showPurify && !showBurn}
+                />
                 {showPurify && (
-                  <th className="py-2 text-right font-normal">化羽/清泉</th>
+                  <SortTh label="化羽/清泉" k="purify" sort={sort} last />
                 )}
-                {showBurn && <th className="py-2 text-right font-normal">焚骨</th>}
+                {showBurn && <SortTh label="焚骨" k="burn" sort={sort} last />}
               </tr>
             </thead>
             <tbody className="tabular-nums">

@@ -29,6 +29,7 @@ import {
 import PlayerDetailModal from "./PlayerDetailModal";
 import ClassDetailModal from "./ClassDetailModal";
 import Dropdown from "./Dropdown";
+import { SortTh, useSortable, useSortedPlayers } from "./sortable";
 
 type Tab = "overview" | "class" | "players" | "teams";
 type MetricKey =
@@ -735,6 +736,7 @@ function TeamsTab({
   const [editMode, setEditMode] = useState(false);
   const [editSearch, setEditSearch] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
+  const editSort = useSortable("team", false);
   const [isPending, startTransition] = useTransition();
 
   const setOverride = (name: string, mainTeam: string, subRole: string | null) => {
@@ -868,9 +870,23 @@ function TeamsTab({
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-bdr text-left text-xs text-muted">
-                  <th className="py-2 pr-3 font-normal">玩家</th>
-                  <th className="py-2 pr-3 font-normal">職業</th>
-                  <th className="py-2 pr-3 font-normal">主團</th>
+                  {(
+                    [
+                      ["name", "玩家"],
+                      ["cls", "職業"],
+                      ["team", "主團"],
+                    ] as [string, string][]
+                  ).map(([k, label]) => (
+                    <th key={k} className="py-2 pr-3 font-normal">
+                      <button
+                        onClick={() => editSort.toggle(k, false)}
+                        className="cursor-pointer hover:text-ink"
+                      >
+                        {label}
+                        {editSort.key === k && (editSort.desc ? " ↓" : " ↑")}
+                      </button>
+                    </th>
+                  ))}
                   <th className="py-2 pr-3 font-normal">副職</th>
                   <th className="py-2 pr-3 font-normal">來源</th>
                   <th className="py-2 font-normal"></th>
@@ -882,12 +898,24 @@ function TeamsTab({
                     (p) => !editSearch.trim() || p.name.includes(editSearch.trim())
                   )
                   .sort((a, b) => {
-                    const order = (p: PlayerStats) => {
+                    const teamOrder = (p: PlayerStats) => {
                       const t = teams[p.name];
                       return t ? MAIN_TEAMS.indexOf(t.mainTeam) : MAIN_TEAMS.length;
                     };
+                    const valueOf = (p: PlayerStats): number | string =>
+                      editSort.key === "name"
+                        ? p.name
+                        : editSort.key === "cls"
+                          ? p.cls
+                          : teamOrder(p);
+                    const va = valueOf(a);
+                    const vb = valueOf(b);
+                    const cmp =
+                      typeof va === "string"
+                        ? va.localeCompare(String(vb), "zh-TW")
+                        : Number(va) - Number(vb);
                     return (
-                      order(a) - order(b) ||
+                      (editSort.desc ? -cmp : cmp) ||
                       a.cls.localeCompare(b.cls, "zh-TW") ||
                       a.name.localeCompare(b.name, "zh-TW")
                     );
@@ -1094,79 +1122,14 @@ function TeamsTab({
           const members = groups.get(t)!;
           if (members.length === 0) return null;
           return (
-            <section key={t} className="rounded-xl border border-bdr bg-surface p-5">
-              <h2 className="mb-3 font-semibold">
-                {t === "未分團" ? "未分團" : `${t}團`}
-                <span className="ml-2 text-xs font-normal text-muted">
-                  {members.length} 人・依對玩家傷害排序・點選列看玩家詳情
-                </span>
-              </h2>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-bdr text-left text-xs text-muted">
-                      <th className="py-2 pr-3 font-normal">玩家</th>
-                      <th className="py-2 pr-3 font-normal">職業</th>
-                      <th className="py-2 pr-3 font-normal">副職</th>
-                      <th className="py-2 pr-3 text-right font-normal">擊敗</th>
-                      <th className="py-2 pr-3 text-right font-normal">重傷</th>
-                      <th className="py-2 pr-3 text-right font-normal">助攻</th>
-                      <th className="py-2 pr-3 text-right font-normal">KDA</th>
-                      <th className="py-2 pr-3 text-right font-normal">對玩家傷害</th>
-                      <th className="py-2 pr-3 text-right font-normal">對建築傷害</th>
-                      <th className="py-2 pr-3 text-right font-normal">治療值</th>
-                      <th className="py-2 text-right font-normal">承受傷害</th>
-                    </tr>
-                  </thead>
-                  <tbody className="tabular-nums">
-                    {members.map((p) => (
-                      <tr
-                        key={p.id ?? p.name}
-                        onClick={() => setSelected(p)}
-                        className="cursor-pointer border-b border-grid hover:bg-wash"
-                      >
-                        <td className="py-2 pr-3 font-medium">
-                          {p.name}
-                          {overrides[p.name] && (
-                            <span className="ml-1.5 rounded border border-bdr px-1 py-0.5 text-[10px] text-accent">
-                              本場
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-2 pr-3 text-ink2">{p.cls}</td>
-                        <td className="py-2 pr-3">
-                          {teams[p.name]?.subRole ? (
-                            <span className="rounded border border-bdr px-1.5 py-0.5 text-xs text-ink2">
-                              {teams[p.name]!.subRole}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-muted">—</span>
-                          )}
-                        </td>
-                        <td className="py-2 pr-3 text-right">{fmtInt(p.kills)}</td>
-                        <td className="py-2 pr-3 text-right">{fmtInt(p.deaths)}</td>
-                        <td className="py-2 pr-3 text-right">{fmtInt(p.assists)}</td>
-                        <td className="py-2 pr-3 text-right">
-                          {fmtKda(p.kills, p.deaths, p.assists)}
-                        </td>
-                        <td className="py-2 pr-3 text-right" title={fmtInt(p.playerDamage)}>
-                          {fmtCompact(p.playerDamage)}
-                        </td>
-                        <td className="py-2 pr-3 text-right" title={fmtInt(p.buildingDamage)}>
-                          {fmtCompact(p.buildingDamage)}
-                        </td>
-                        <td className="py-2 pr-3 text-right" title={fmtInt(p.healing)}>
-                          {fmtCompact(p.healing)}
-                        </td>
-                        <td className="py-2 text-right" title={fmtInt(p.damageTaken)}>
-                          {fmtCompact(p.damageTaken)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
+            <TeamMemberSection
+              key={t}
+              title={t === "未分團" ? "未分團" : `${t}團`}
+              members={members}
+              teams={teams}
+              overrides={overrides}
+              onSelect={setSelected}
+            />
           );
         }
       )}
@@ -1186,5 +1149,97 @@ function TeamsTab({
         />
       )}
     </div>
+  );
+}
+
+// 單一分團的成員表（欄位可排序）
+function TeamMemberSection({
+  title,
+  members,
+  teams,
+  overrides,
+  onSelect,
+}: {
+  title: string;
+  members: PlayerStats[];
+  teams: TeamMap;
+  overrides: TeamMap;
+  onSelect: (p: PlayerStats) => void;
+}) {
+  const { sorted, sort } = useSortedPlayers(members, "playerDamage");
+  return (
+    <section className="rounded-xl border border-bdr bg-surface p-5">
+      <h2 className="mb-3 font-semibold">
+        {title}
+        <span className="ml-2 text-xs font-normal text-muted">
+          {members.length} 人・點欄位標題可排序・點選列看玩家詳情
+        </span>
+      </h2>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-bdr text-left text-xs text-muted">
+              <SortTh label="玩家" k="name" sort={sort} numeric={false} />
+              <SortTh label="職業" k="cls" sort={sort} numeric={false} />
+              <th className="py-2 pr-3 font-normal">副職</th>
+              <SortTh label="擊敗" k="kills" sort={sort} />
+              <SortTh label="重傷" k="deaths" sort={sort} />
+              <SortTh label="助攻" k="assists" sort={sort} />
+              <SortTh label="KDA" k="kda" sort={sort} />
+              <SortTh label="對玩家傷害" k="playerDamage" sort={sort} />
+              <SortTh label="對建築傷害" k="buildingDamage" sort={sort} />
+              <SortTh label="治療值" k="healing" sort={sort} />
+              <SortTh label="承受傷害" k="damageTaken" sort={sort} last />
+            </tr>
+          </thead>
+          <tbody className="tabular-nums">
+            {sorted.map((p) => (
+              <tr
+                key={p.id ?? p.name}
+                onClick={() => onSelect(p)}
+                className="cursor-pointer border-b border-grid hover:bg-wash"
+              >
+                <td className="py-2 pr-3 font-medium">
+                  {p.name}
+                  {overrides[p.name] && (
+                    <span className="ml-1.5 rounded border border-bdr px-1 py-0.5 text-[10px] text-accent">
+                      本場
+                    </span>
+                  )}
+                </td>
+                <td className="py-2 pr-3 text-ink2">{p.cls}</td>
+                <td className="py-2 pr-3">
+                  {teams[p.name]?.subRole ? (
+                    <span className="rounded border border-bdr px-1.5 py-0.5 text-xs text-ink2">
+                      {teams[p.name]!.subRole}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-muted">—</span>
+                  )}
+                </td>
+                <td className="py-2 pr-3 text-right">{fmtInt(p.kills)}</td>
+                <td className="py-2 pr-3 text-right">{fmtInt(p.deaths)}</td>
+                <td className="py-2 pr-3 text-right">{fmtInt(p.assists)}</td>
+                <td className="py-2 pr-3 text-right">
+                  {fmtKda(p.kills, p.deaths, p.assists)}
+                </td>
+                <td className="py-2 pr-3 text-right" title={fmtInt(p.playerDamage)}>
+                  {fmtCompact(p.playerDamage)}
+                </td>
+                <td className="py-2 pr-3 text-right" title={fmtInt(p.buildingDamage)}>
+                  {fmtCompact(p.buildingDamage)}
+                </td>
+                <td className="py-2 pr-3 text-right" title={fmtInt(p.healing)}>
+                  {fmtCompact(p.healing)}
+                </td>
+                <td className="py-2 text-right" title={fmtInt(p.damageTaken)}>
+                  {fmtCompact(p.damageTaken)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
