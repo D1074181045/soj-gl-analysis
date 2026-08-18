@@ -4,7 +4,7 @@ services:
     image: soj-gl-analysis
     container_name: soj-gl-analysis
     ports:
-      - "3000:3000"
+      - "3001:3000"
     volumes:
       # SQLite 資料庫持久化（named volume；改成 ./data:/app/data 可直接用主機目錄）
       - app-data:/app/data

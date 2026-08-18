@@ -60,3 +60,23 @@ export function metricAppliesToClass(key: string, cls: string): boolean {
   if (key === "burn") return cls === "九靈";
   return true;
 }
+
+// 分團：主團必選三選一；副職可不選，選則三選一
+export const MAIN_TEAMS = ["進攻", "機動", "防守"] as const;
+export const SUB_ROLES = ["保鑣", "扛拆", "空拆"] as const;
+export type MainTeam = (typeof MAIN_TEAMS)[number];
+export type SubRole = (typeof SUB_ROLES)[number];
+
+export interface TeamAssignment {
+  mainTeam: MainTeam;
+  subRole: SubRole | null;
+}
+
+// 玩家名字 → 分團設定（以名字為鍵、跨場次共用）
+export type TeamMap = Record<string, TeamAssignment>;
+
+export interface RosterEntry {
+  name: string;
+  cls: string; // 最近一場的職業
+  matchCount: number;
+}

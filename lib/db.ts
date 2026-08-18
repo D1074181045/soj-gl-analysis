@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE INDEX IF NOT EXISTS idx_players_match ON players(match_id);
 CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
 CREATE INDEX IF NOT EXISTS idx_matches_user ON matches(user_id);
+CREATE TABLE IF NOT EXISTS team_assignments (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  player_name TEXT NOT NULL,
+  main_team TEXT NOT NULL,  -- 進攻 | 機動 | 防守
+  sub_role TEXT,            -- 保鑣 | 扛拆 | 空拆 | NULL
+  PRIMARY KEY (user_id, player_name)
+);
 `);
 
 export default db;

@@ -81,6 +81,7 @@ export function ContributionMeter({
   rank,
   total,
   fmt,
+  scope = "全隊",
 }: {
   label: string;
   value: number;
@@ -88,6 +89,7 @@ export function ContributionMeter({
   rank: number;
   total: number;
   fmt: (n: number) => string;
+  scope?: string;
 }) {
   return (
     <div>
@@ -96,7 +98,7 @@ export function ContributionMeter({
         <span className="text-ink tabular-nums" title={value.toLocaleString("zh-TW")}>
           {fmt(value)}
           <span className="ml-2 text-xs text-muted">
-            佔全隊 {(ratio * 100).toFixed(1)}% · 第 {rank}/{total} 名
+            佔{scope} {(ratio * 100).toFixed(1)}% · 第 {rank}/{total} 名
           </span>
         </span>
       </div>

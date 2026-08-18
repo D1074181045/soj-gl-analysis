@@ -5,12 +5,14 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  LabelList,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
-import type { MatchDetail, PlayerStats } from "@/lib/types";
+import type { MatchDetail, PlayerStats, TeamMap } from "@/lib/types";
+import { MAIN_TEAMS } from "@/lib/types";
 import { fmtAvg, fmtCompact, fmtDate, fmtInt, fmtKda, kdaOf } from "@/lib/format";
 import {
   ALLY_COLOR,
@@ -24,7 +26,7 @@ import PlayerDetailModal from "./PlayerDetailModal";
 import ClassDetailModal from "./ClassDetailModal";
 import Dropdown from "./Dropdown";
 
-type Tab = "overview" | "class" | "players";
+type Tab = "overview" | "class" | "players" | "teams";
 type MetricKey =
   | "kills"
   | "deaths"
@@ -66,9 +68,11 @@ function avg(players: PlayerStats[], key: MetricKey): number {
 
 export default function MatchView({
   match,
+  teams = {},
   shareBanner = false,
 }: {
   match: MatchDetail;
+  teams?: TeamMap;
   shareBanner?: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("overview");
@@ -76,6 +80,14 @@ export default function MatchView({
     { label: match.allyName, color: ALLY_COLOR },
     { label: match.enemyName, color: ENEMY_COLOR },
   ];
+  const hasTeams = match.ally.some((p) => teams[p.name]);
+  const tabList: [Tab, string][] = [
+    ["overview", "總覽"],
+    ["class", "職業統計"],
+    ["players", "玩家數據"],
+  ];
+  // 分享檢視只在擁有者有設定分團時才顯示此分頁
+  if (!shareBanner || hasTeams) tabList.push(["teams", "分團統計"]);
 
   return (
     <div className="flex flex-col gap-5">
@@ -102,13 +114,7 @@ export default function MatchView({
       </header>
 
       <nav className="flex gap-1 border-b border-bdr">
-        {(
-          [
-            ["overview", "總覽"],
-            ["class", "職業統計"],
-            ["players", "玩家數據"],
-          ] as [Tab, string][]
-        ).map(([key, label]) => (
+        {tabList.map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -124,8 +130,11 @@ export default function MatchView({
       </nav>
 
       {tab === "overview" && <OverviewTab match={match} legendItems={legendItems} />}
-      {tab === "class" && <ClassTab match={match} legendItems={legendItems} />}
-      {tab === "players" && <PlayersTab match={match} />}
+      {tab === "class" && <ClassTab match={match} teams={teams} legendItems={legendItems} />}
+      {tab === "players" && <PlayersTab match={match} teams={teams} />}
+      {tab === "teams" && (
+        <TeamsTab match={match} teams={teams} isOwner={!shareBanner} />
+      )}
     </div>
   );
 }
@@ -255,9 +264,11 @@ function OverviewTab({
 
 function ClassTab({
   match,
+  teams,
   legendItems,
 }: {
   match: MatchDetail;
+  teams: TeamMap;
   legendItems: { label: string; color: string }[];
 }) {
   const [metric, setMetric] = useState<MetricKey>("kills");
@@ -452,6 +463,7 @@ function ClassTab({
           sideLabel={tableSide === 0 ? "我方" : "對方"}
           opponents={tableSide === 0 ? match.enemy : match.ally}
           opponentName={tableSide === 0 ? match.enemyName : match.allyName}
+          teams={teams}
           onClose={() => setSelectedPlayer(null)}
         />
       )}
@@ -479,7 +491,7 @@ const PLAYER_COLUMNS: { key: SortKey; label: string; numeric: boolean }[] = [
   { key: "resources", label: "資源", numeric: true },
 ];
 
-function PlayersTab({ match }: { match: MatchDetail }) {
+function PlayersTab({ match, teams }: { match: MatchDetail; teams: TeamMap }) {
   const [side, setSide] = useState<0 | 1>(0);
   const [clsFilter, setClsFilter] = useState<string>("");
   const [search, setSearch] = useState("");
@@ -662,9 +674,291 @@ function PlayersTab({ match }: { match: MatchDetail }) {
           sideLabel={side === 0 ? "我方" : "對方"}
           opponents={side === 0 ? match.enemy : match.ally}
           opponentName={side === 0 ? match.enemyName : match.allyName}
+          teams={teams}
           onClose={() => setSelected(null)}
         />
       )}
     </section>
+  );
+}
+
+const TEAM_METRICS: { key: MetricKey; label: string; fmt: (n: number) => string }[] = [
+  { key: "playerDamage", label: "對玩家傷害", fmt: fmtCompact },
+  { key: "buildingDamage", label: "對建築傷害", fmt: fmtCompact },
+  { key: "healing", label: "治療值", fmt: fmtCompact },
+  { key: "damageTaken", label: "承受傷害", fmt: fmtCompact },
+  { key: "kills", label: "擊敗", fmt: fmtInt },
+  { key: "deaths", label: "重傷", fmt: fmtInt },
+  { key: "assists", label: "助攻", fmt: fmtInt },
+  { key: "resources", label: "資源", fmt: fmtInt },
+];
+
+function TeamsTab({
+  match,
+  teams,
+  isOwner,
+}: {
+  match: MatchDetail;
+  teams: TeamMap;
+  isOwner: boolean;
+}) {
+  const [metric, setMetric] = useState<MetricKey>("playerDamage");
+  const [mode, setMode] = useState<"total" | "avg">("total");
+  const [selected, setSelected] = useState<PlayerStats | null>(null);
+
+  const groups = useMemo(() => {
+    const g = new Map<string, PlayerStats[]>();
+    for (const t of MAIN_TEAMS) g.set(t, []);
+    g.set("未分團", []);
+    for (const p of match.ally) {
+      const a = teams[p.name];
+      g.get(a ? a.mainTeam : "未分團")!.push(p);
+    }
+    for (const list of g.values()) {
+      list.sort((a, b) => b.playerDamage - a.playerDamage);
+    }
+    return g;
+  }, [match, teams]);
+
+  const unassigned = groups.get("未分團")!;
+  const assignedCount = match.ally.length - unassigned.length;
+
+  const metricDef = TEAM_METRICS.find((m) => m.key === metric)!;
+  const chartData = useMemo(
+    () =>
+      [...MAIN_TEAMS.map((t) => t as string), ...(unassigned.length ? ["未分團"] : [])].map(
+        (t) => {
+          const members = groups.get(t)!;
+          const total = sum(members, metric);
+          return {
+            team: t === "未分團" ? t : `${t}團`,
+            value: mode === "total" ? total : members.length ? total / members.length : 0,
+          };
+        }
+      ),
+    [groups, metric, mode, unassigned.length]
+  );
+
+  if (assignedCount === 0) {
+    return (
+      <p className="rounded-xl border border-dashed border-baseline p-10 text-center text-sm text-muted">
+        尚未設定任何分團。
+        {isOwner && (
+          <>
+            請先到「
+            <a href="/teams" className="text-accent hover:underline">
+              陣容配置
+            </a>
+            」把我方玩家分配到進攻／機動／防守團。
+          </>
+        )}
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {MAIN_TEAMS.map((t) => {
+          const members = groups.get(t)!;
+          const k = sum(members, "kills");
+          const d = sum(members, "deaths");
+          const a = sum(members, "assists");
+          return (
+            <div key={t} className="rounded-xl border border-bdr bg-surface p-4">
+              <div className="flex items-baseline justify-between">
+                <h3 className="font-semibold">{t}團</h3>
+                <span className="text-xs text-muted">{members.length} 人</span>
+              </div>
+              <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 text-sm tabular-nums">
+                <dt className="text-muted">KDA</dt>
+                <dd className="text-right">
+                  {fmtKda(k, d, a)}
+                  <span className="ml-1 text-xs text-muted">
+                    ({fmtInt(k)}/{fmtInt(d)}/{fmtInt(a)})
+                  </span>
+                </dd>
+                <dt className="text-muted">對玩家傷害</dt>
+                <dd className="text-right">{fmtCompact(sum(members, "playerDamage"))}</dd>
+                <dt className="text-muted">對建築傷害</dt>
+                <dd className="text-right">{fmtCompact(sum(members, "buildingDamage"))}</dd>
+                <dt className="text-muted">治療值</dt>
+                <dd className="text-right">{fmtCompact(sum(members, "healing"))}</dd>
+                <dt className="text-muted">承受傷害</dt>
+                <dd className="text-right">{fmtCompact(sum(members, "damageTaken"))}</dd>
+              </dl>
+            </div>
+          );
+        })}
+      </div>
+
+      <section className="rounded-xl border border-bdr bg-surface p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-semibold">各團對比（{match.allyName}）</h2>
+          <div className="flex gap-1">
+            {(
+              [
+                ["total", "總量"],
+                ["avg", "人均"],
+              ] as ["total" | "avg", string][]
+            ).map(([m, label]) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`rounded-md px-3 py-1 text-xs cursor-pointer ${
+                  mode === m
+                    ? "bg-accent text-white"
+                    : "border border-bdr text-ink2 hover:bg-wash"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mb-4 flex flex-wrap gap-1.5">
+          {TEAM_METRICS.map((m) => (
+            <button
+              key={m.key}
+              onClick={() => setMetric(m.key)}
+              className={`rounded-full px-3 py-1 text-xs cursor-pointer ${
+                metric === m.key
+                  ? "bg-accent text-white"
+                  : "border border-bdr text-ink2 hover:bg-wash"
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <ResponsiveContainer width="100%" height={260}>
+          <BarChart data={chartData} margin={{ top: 24, right: 8 }}>
+            <CartesianGrid vertical={false} stroke="var(--grid)" strokeWidth={1} />
+            <XAxis
+              dataKey="team"
+              tick={{ fill: "var(--muted)", fontSize: 12 }}
+              axisLine={{ stroke: "var(--baseline)" }}
+              tickLine={false}
+            />
+            <YAxis
+              width={56}
+              tick={{ fill: "var(--muted)", fontSize: 12 }}
+              axisLine={false}
+              tickLine={false}
+              tickFormatter={(v: number) => fmtCompact(v)}
+            />
+            <Tooltip
+              cursor={{ fill: "var(--wash)" }}
+              content={<ChartTooltip fmt={(n) => (mode === "avg" ? fmtAvg(n) : metricDef.fmt(n))} />}
+            />
+            <Bar
+              dataKey="value"
+              name={`${metricDef.label}（${mode === "total" ? "總量" : "人均"}）`}
+              fill="var(--accent)"
+              radius={[4, 4, 0, 0]}
+              maxBarSize={24}
+            >
+              <LabelList
+                dataKey="value"
+                position="top"
+                fill="var(--ink-2)"
+                fontSize={12}
+                formatter={(v) =>
+                  mode === "avg" ? fmtAvg(Number(v)) : metricDef.fmt(Number(v))
+                }
+              />
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </section>
+
+      {[...MAIN_TEAMS.map((t) => t as string), ...(unassigned.length ? ["未分團"] : [])].map(
+        (t) => {
+          const members = groups.get(t)!;
+          if (members.length === 0) return null;
+          return (
+            <section key={t} className="rounded-xl border border-bdr bg-surface p-5">
+              <h2 className="mb-3 font-semibold">
+                {t === "未分團" ? "未分團" : `${t}團`}
+                <span className="ml-2 text-xs font-normal text-muted">
+                  {members.length} 人・依對玩家傷害排序・點選列看玩家詳情
+                </span>
+              </h2>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-bdr text-left text-xs text-muted">
+                      <th className="py-2 pr-3 font-normal">玩家</th>
+                      <th className="py-2 pr-3 font-normal">職業</th>
+                      <th className="py-2 pr-3 font-normal">副職</th>
+                      <th className="py-2 pr-3 text-right font-normal">擊敗</th>
+                      <th className="py-2 pr-3 text-right font-normal">重傷</th>
+                      <th className="py-2 pr-3 text-right font-normal">助攻</th>
+                      <th className="py-2 pr-3 text-right font-normal">KDA</th>
+                      <th className="py-2 pr-3 text-right font-normal">對玩家傷害</th>
+                      <th className="py-2 pr-3 text-right font-normal">對建築傷害</th>
+                      <th className="py-2 pr-3 text-right font-normal">治療值</th>
+                      <th className="py-2 text-right font-normal">承受傷害</th>
+                    </tr>
+                  </thead>
+                  <tbody className="tabular-nums">
+                    {members.map((p) => (
+                      <tr
+                        key={p.id ?? p.name}
+                        onClick={() => setSelected(p)}
+                        className="cursor-pointer border-b border-grid hover:bg-wash"
+                      >
+                        <td className="py-2 pr-3 font-medium">{p.name}</td>
+                        <td className="py-2 pr-3 text-ink2">{p.cls}</td>
+                        <td className="py-2 pr-3">
+                          {teams[p.name]?.subRole ? (
+                            <span className="rounded border border-bdr px-1.5 py-0.5 text-xs text-ink2">
+                              {teams[p.name]!.subRole}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-muted">—</span>
+                          )}
+                        </td>
+                        <td className="py-2 pr-3 text-right">{fmtInt(p.kills)}</td>
+                        <td className="py-2 pr-3 text-right">{fmtInt(p.deaths)}</td>
+                        <td className="py-2 pr-3 text-right">{fmtInt(p.assists)}</td>
+                        <td className="py-2 pr-3 text-right">
+                          {fmtKda(p.kills, p.deaths, p.assists)}
+                        </td>
+                        <td className="py-2 pr-3 text-right" title={fmtInt(p.playerDamage)}>
+                          {fmtCompact(p.playerDamage)}
+                        </td>
+                        <td className="py-2 pr-3 text-right" title={fmtInt(p.buildingDamage)}>
+                          {fmtCompact(p.buildingDamage)}
+                        </td>
+                        <td className="py-2 pr-3 text-right" title={fmtInt(p.healing)}>
+                          {fmtCompact(p.healing)}
+                        </td>
+                        <td className="py-2 text-right" title={fmtInt(p.damageTaken)}>
+                          {fmtCompact(p.damageTaken)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          );
+        }
+      )}
+
+      {selected && (
+        <PlayerDetailModal
+          player={selected}
+          team={match.ally}
+          guildName={match.allyName}
+          sideLabel="我方"
+          opponents={match.enemy}
+          opponentName={match.enemyName}
+          teams={teams}
+          onClose={() => setSelected(null)}
+        />
+      )}
+    </div>
   );
 }

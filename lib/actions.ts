@@ -7,6 +7,8 @@ import { redirect } from "next/navigation";
 import db from "./db";
 import { createSession, destroySession, getCurrentUser } from "./auth";
 import { decodeCsv, parseGuildWarCsv } from "./parse";
+import { MAIN_TEAMS, SUB_ROLES } from "./types";
+import type { MainTeam, SubRole } from "./types";
 
 export interface ActionState {
   error?: string;
@@ -153,4 +155,41 @@ export async function disableShareAction(formData: FormData): Promise<void> {
   db.prepare("UPDATE matches SET share_token = NULL WHERE id = ?").run(id);
   revalidatePath("/dashboard");
   revalidatePath(`/match/${id}`);
+}
+
+// 設定分團：主團必選（進攻/機動/防守三選一）、副職可為空（保鑣/扛拆/空拆三選一）
+export async function setTeamAssignmentAction(
+  playerName: string,
+  mainTeam: string,
+  subRole: string | null
+): Promise<{ error?: string }> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  const name = playerName.trim();
+  if (!name) return { error: "玩家名字不可為空" };
+  if (!MAIN_TEAMS.includes(mainTeam as MainTeam)) {
+    return { error: "主團必須為進攻、機動或防守其中之一" };
+  }
+  if (subRole !== null && !SUB_ROLES.includes(subRole as SubRole)) {
+    return { error: "副職必須為保鑣、扛拆或空拆其中之一" };
+  }
+  db.prepare(
+    `INSERT INTO team_assignments (user_id, player_name, main_team, sub_role)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id, player_name)
+     DO UPDATE SET main_team = excluded.main_team, sub_role = excluded.sub_role`
+  ).run(user.id, name, mainTeam, subRole);
+  revalidatePath("/teams");
+  return {};
+}
+
+export async function clearTeamAssignmentAction(
+  playerName: string
+): Promise<void> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  db.prepare(
+    "DELETE FROM team_assignments WHERE user_id = ? AND player_name = ?"
+  ).run(user.id, playerName.trim());
+  revalidatePath("/teams");
 }

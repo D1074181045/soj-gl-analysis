@@ -27,6 +27,9 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
                 >
                   我的場次
                 </Link>
+                <Link href="/teams" className="text-sm text-ink2 hover:text-ink">
+                  陣容配置
+                </Link>
                 <Link
                   href="/players"
                   className="text-sm text-ink2 hover:text-ink"
