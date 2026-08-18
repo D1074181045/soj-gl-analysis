@@ -184,3 +184,21 @@ export function getTeamAssignmentsByMatch(matchId: number): TeamMap {
     .get(matchId) as { user_id: number } | undefined;
   return row ? getTeamAssignments(row.user_id) : {};
 }
+
+// 單場分團調整（優先級高於統一陣容配置）
+export function getMatchTeamOverrides(matchId: number): TeamMap {
+  const rows = db
+    .prepare(
+      "SELECT player_name, main_team, sub_role FROM match_team_assignments WHERE match_id = ?"
+    )
+    .all(matchId) as {
+    player_name: string;
+    main_team: MainTeam;
+    sub_role: SubRole | null;
+  }[];
+  const map: TeamMap = {};
+  for (const r of rows) {
+    map[r.player_name] = { mainTeam: r.main_team, subRole: r.sub_role };
+  }
+  return map;
+}

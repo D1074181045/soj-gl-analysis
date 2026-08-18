@@ -59,6 +59,6 @@ Next.js 16（App Router、Turbopack）+ TypeScript + Tailwind 4 + better-sqlite3
 
 - 欄位語意：**重傷 = 死亡次數**；KDA =（擊敗＋助攻）÷ max(重傷, 1)（`lib/format.ts` 的 `kdaOf`）。
 - **職業專屬指標**（`lib/types.ts` 的 `metricAppliesToClass`）：化羽/清泉只屬於素問與潮光、焚骨只屬於九靈。任何顯示這兩個指標的新 UI 都必須套用此過濾。
-- **分團**（`team_assignments` 資料表，以「使用者＋玩家名字」為鍵、跨場次共用）：主團＝進攻/機動/防守必選三選一；副職＝保鑣/扛拆/空拆可不選、選則三選一（`lib/types.ts` 的 `MAIN_TEAMS`/`SUB_ROLES`，server action 有驗證）。戰報的「分團統計」分頁與玩家詳情的團隊區塊都是用名字 join 這張表；分享頁由場次反查擁有者的設定（`getTeamAssignmentsByMatch`）。
+- **分團**（以「使用者＋玩家名字」為鍵、跨場次共用的 `team_assignments`，加上以「場次＋玩家名字」為鍵的單場覆寫 `match_team_assignments`，**優先級：本場調整 > 統一陣容配置**，合併在 `MatchView` 的 `effectiveTeams`）：主團＝進攻/機動/防守必選三選一；副職＝保鑣/扛拆/空拆可不選、選則三選一（`lib/types.ts` 的 `MAIN_TEAMS`/`SUB_ROLES`，server action 有驗證）。統一配置在 `/teams`，單場調整在戰報「分團統計」分頁的編輯模式（僅擁有者）。戰報分團分頁與玩家詳情的團隊區塊都是用名字 join；分享頁由場次反查擁有者設定（`getTeamAssignmentsByMatch`）再疊上該場覆寫。
 - **配色是經過色盲驗證的固定規則**：我方＝藍 `var(--ally)`、對方＝橘 `var(--enemy)`（檢視對方視角的詳情時兩色互換，見 modal 內的 `ownColor`/`oppColor`）。設計 token 全在 `app/globals.css`（明暗雙模式，經 `@theme inline` 映射成 Tailwind 類別如 `bg-surface`、`text-ink`、`border-bdr`），新 UI 用這些 token，不要另外挑色。
 - 大數值以 `fmtCompact` 壓縮（萬/億），完整值放 `title` 屬性；表格數字加 `tabular-nums`。

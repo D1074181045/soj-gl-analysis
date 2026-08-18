@@ -193,3 +193,45 @@ export async function clearTeamAssignmentAction(
   ).run(user.id, playerName.trim());
   revalidatePath("/teams");
 }
+
+// 單場分團調整（覆蓋統一陣容配置；規則與統一配置相同）
+export async function setMatchTeamAssignmentAction(
+  matchId: number,
+  playerName: string,
+  mainTeam: string,
+  subRole: string | null
+): Promise<{ error?: string }> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  requireOwnedMatch(user.id, matchId);
+  const name = playerName.trim();
+  if (!name) return { error: "玩家名字不可為空" };
+  if (!MAIN_TEAMS.includes(mainTeam as MainTeam)) {
+    return { error: "主團必須為進攻、機動或防守其中之一" };
+  }
+  if (subRole !== null && !SUB_ROLES.includes(subRole as SubRole)) {
+    return { error: "副職必須為保鑣、扛拆或空拆其中之一" };
+  }
+  db.prepare(
+    `INSERT INTO match_team_assignments (match_id, player_name, main_team, sub_role)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(match_id, player_name)
+     DO UPDATE SET main_team = excluded.main_team, sub_role = excluded.sub_role`
+  ).run(matchId, name, mainTeam, subRole);
+  revalidatePath(`/match/${matchId}`);
+  return {};
+}
+
+// 還原單場調整（回到統一陣容配置）
+export async function clearMatchTeamAssignmentAction(
+  matchId: number,
+  playerName: string
+): Promise<void> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  requireOwnedMatch(user.id, matchId);
+  db.prepare(
+    "DELETE FROM match_team_assignments WHERE match_id = ? AND player_name = ?"
+  ).run(matchId, playerName.trim());
+  revalidatePath(`/match/${matchId}`);
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import {
   Bar,
   BarChart,
@@ -12,7 +12,11 @@ import {
   YAxis,
 } from "recharts";
 import type { MatchDetail, PlayerStats, TeamMap } from "@/lib/types";
-import { MAIN_TEAMS } from "@/lib/types";
+import { MAIN_TEAMS, SUB_ROLES } from "@/lib/types";
+import {
+  clearMatchTeamAssignmentAction,
+  setMatchTeamAssignmentAction,
+} from "@/lib/actions";
 import { fmtAvg, fmtCompact, fmtDate, fmtInt, fmtKda, kdaOf } from "@/lib/format";
 import {
   ALLY_COLOR,
@@ -69,18 +73,26 @@ function avg(players: PlayerStats[], key: MetricKey): number {
 export default function MatchView({
   match,
   teams = {},
+  matchTeams = {},
   shareBanner = false,
 }: {
   match: MatchDetail;
-  teams?: TeamMap;
+  teams?: TeamMap; // 統一陣容配置
+  matchTeams?: TeamMap; // 本場調整（優先）
   shareBanner?: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("overview");
+  // 本場調整以樂觀更新維護；生效設定 = 統一配置被本場調整覆蓋
+  const [overrides, setOverrides] = useState<TeamMap>(matchTeams);
+  const effectiveTeams = useMemo(
+    () => ({ ...teams, ...overrides }),
+    [teams, overrides]
+  );
   const legendItems = [
     { label: match.allyName, color: ALLY_COLOR },
     { label: match.enemyName, color: ENEMY_COLOR },
   ];
-  const hasTeams = match.ally.some((p) => teams[p.name]);
+  const hasTeams = match.ally.some((p) => effectiveTeams[p.name]);
   const tabList: [Tab, string][] = [
     ["overview", "總覽"],
     ["class", "職業統計"],
@@ -130,10 +142,19 @@ export default function MatchView({
       </nav>
 
       {tab === "overview" && <OverviewTab match={match} legendItems={legendItems} />}
-      {tab === "class" && <ClassTab match={match} teams={teams} legendItems={legendItems} />}
-      {tab === "players" && <PlayersTab match={match} teams={teams} />}
+      {tab === "class" && (
+        <ClassTab match={match} teams={effectiveTeams} legendItems={legendItems} />
+      )}
+      {tab === "players" && <PlayersTab match={match} teams={effectiveTeams} />}
       {tab === "teams" && (
-        <TeamsTab match={match} teams={teams} isOwner={!shareBanner} />
+        <TeamsTab
+          match={match}
+          teams={effectiveTeams}
+          globalTeams={teams}
+          overrides={overrides}
+          setOverrides={setOverrides}
+          isOwner={!shareBanner}
+        />
       )}
     </div>
   );
@@ -696,15 +717,56 @@ const TEAM_METRICS: { key: MetricKey; label: string; fmt: (n: number) => string 
 function TeamsTab({
   match,
   teams,
+  globalTeams,
+  overrides,
+  setOverrides,
   isOwner,
 }: {
   match: MatchDetail;
-  teams: TeamMap;
+  teams: TeamMap; // 生效設定（統一配置 + 本場調整）
+  globalTeams: TeamMap;
+  overrides: TeamMap;
+  setOverrides: React.Dispatch<React.SetStateAction<TeamMap>>;
   isOwner: boolean;
 }) {
   const [metric, setMetric] = useState<MetricKey>("playerDamage");
   const [mode, setMode] = useState<"total" | "avg">("total");
   const [selected, setSelected] = useState<PlayerStats | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [editSearch, setEditSearch] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+
+  const setOverride = (name: string, mainTeam: string, subRole: string | null) => {
+    setOverrides((m) => ({
+      ...m,
+      [name]: {
+        mainTeam: mainTeam as (typeof MAIN_TEAMS)[number],
+        subRole: subRole as (typeof SUB_ROLES)[number] | null,
+      },
+    }));
+    setEditError(null);
+    startTransition(async () => {
+      const res = await setMatchTeamAssignmentAction(
+        match.id,
+        name,
+        mainTeam,
+        subRole
+      );
+      if (res.error) setEditError(res.error);
+    });
+  };
+
+  const clearOverride = (name: string) => {
+    setOverrides((m) => {
+      const next = { ...m };
+      delete next[name];
+      return next;
+    });
+    startTransition(async () => {
+      await clearMatchTeamAssignmentAction(match.id, name);
+    });
+  };
 
   const groups = useMemo(() => {
     const g = new Map<string, PlayerStats[]>();
@@ -739,25 +801,180 @@ function TeamsTab({
     [groups, metric, mode, unassigned.length]
   );
 
-  if (assignedCount === 0) {
+  if (assignedCount === 0 && !editMode) {
     return (
-      <p className="rounded-xl border border-dashed border-baseline p-10 text-center text-sm text-muted">
+      <div className="rounded-xl border border-dashed border-baseline p-10 text-center text-sm text-muted">
         尚未設定任何分團。
         {isOwner && (
           <>
-            請先到「
+            可到「
             <a href="/teams" className="text-accent hover:underline">
               陣容配置
             </a>
-            」把我方玩家分配到進攻／機動／防守團。
+            」統一設定，或
+            <button
+              onClick={() => setEditMode(true)}
+              className="mx-1 text-accent hover:underline cursor-pointer"
+            >
+              只調整本場分團
+            </button>
+            。
           </>
         )}
-      </p>
+      </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-5">
+      {isOwner && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-muted">
+            分團優先級：本場調整 &gt; 統一陣容配置；帶「本場」標記者為此場專屬設定。
+          </p>
+          <div className="flex items-center gap-3">
+            {editMode && (
+              <span className="text-xs text-muted">
+                {isPending ? "儲存中…" : "變更即時儲存"}
+              </span>
+            )}
+            <button
+              onClick={() => setEditMode((e) => !e)}
+              className={`rounded-md px-3 py-1.5 text-sm cursor-pointer ${
+                editMode
+                  ? "bg-accent text-white"
+                  : "border border-bdr text-ink2 hover:bg-wash"
+              }`}
+            >
+              {editMode ? "完成調整" : "調整本場分團"}
+            </button>
+          </div>
+        </div>
+      )}
+      {editError && <p className="text-sm text-bad">{editError}</p>}
+
+      {editMode && isOwner && (
+        <section className="rounded-xl border border-bdr bg-surface p-5">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-semibold">本場分團調整</h2>
+            <input
+              value={editSearch}
+              onChange={(e) => setEditSearch(e.target.value)}
+              placeholder="搜尋玩家名字…"
+              className="w-44 rounded-md border border-bdr bg-page px-3 py-1.5 text-sm outline-none focus:border-accent"
+            />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-bdr text-left text-xs text-muted">
+                  <th className="py-2 pr-3 font-normal">玩家</th>
+                  <th className="py-2 pr-3 font-normal">職業</th>
+                  <th className="py-2 pr-3 font-normal">主團</th>
+                  <th className="py-2 pr-3 font-normal">副職</th>
+                  <th className="py-2 pr-3 font-normal">來源</th>
+                  <th className="py-2 font-normal"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...match.ally]
+                  .filter(
+                    (p) => !editSearch.trim() || p.name.includes(editSearch.trim())
+                  )
+                  .sort((a, b) => {
+                    const order = (p: PlayerStats) => {
+                      const t = teams[p.name];
+                      return t ? MAIN_TEAMS.indexOf(t.mainTeam) : MAIN_TEAMS.length;
+                    };
+                    return (
+                      order(a) - order(b) ||
+                      a.cls.localeCompare(b.cls, "zh-TW") ||
+                      a.name.localeCompare(b.name, "zh-TW")
+                    );
+                  })
+                  .map((p) => {
+                    const eff = teams[p.name];
+                    const isOverridden = !!overrides[p.name];
+                    return (
+                      <tr key={p.id ?? p.name} className="border-b border-grid">
+                        <td className="py-1.5 pr-3 font-medium">{p.name}</td>
+                        <td className="py-1.5 pr-3 text-ink2">{p.cls}</td>
+                        <td className="py-1.5 pr-3">
+                          <div className="flex gap-1">
+                            {MAIN_TEAMS.map((t) => (
+                              <button
+                                key={t}
+                                onClick={() => {
+                                  if (eff?.mainTeam === t) return;
+                                  setOverride(p.name, t, eff?.subRole ?? null);
+                                }}
+                                className={`rounded-md px-2.5 py-1 text-xs cursor-pointer ${
+                                  eff?.mainTeam === t
+                                    ? "bg-accent text-white"
+                                    : "border border-bdr text-ink2 hover:bg-wash"
+                                }`}
+                              >
+                                {t}
+                              </button>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          <div className="flex gap-1">
+                            {SUB_ROLES.map((s) => (
+                              <button
+                                key={s}
+                                onClick={() => {
+                                  if (!eff) return;
+                                  const next = eff.subRole === s ? null : s;
+                                  setOverride(p.name, eff.mainTeam, next);
+                                }}
+                                disabled={!eff}
+                                title={eff ? undefined : "請先選擇主團"}
+                                className={`rounded-md px-2.5 py-1 text-xs ${
+                                  eff?.subRole === s
+                                    ? "bg-accent text-white cursor-pointer"
+                                    : eff
+                                      ? "border border-bdr text-ink2 hover:bg-wash cursor-pointer"
+                                      : "border border-bdr text-muted opacity-50 cursor-not-allowed"
+                                }`}
+                              >
+                                {s}
+                              </button>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="py-1.5 pr-3 text-xs">
+                          {isOverridden ? (
+                            <span className="text-accent">本場調整</span>
+                          ) : eff ? (
+                            <span className="text-muted">統一配置</span>
+                          ) : (
+                            <span className="text-muted">—</span>
+                          )}
+                        </td>
+                        <td className="py-1.5 text-right">
+                          {isOverridden && (
+                            <button
+                              onClick={() => clearOverride(p.name)}
+                              className="text-xs text-muted hover:text-bad cursor-pointer"
+                              title="移除本場調整，回到統一配置"
+                            >
+                              還原
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {assignedCount > 0 && (
+        <>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         {MAIN_TEAMS.map((t) => {
           const members = groups.get(t)!;
@@ -908,7 +1125,14 @@ function TeamsTab({
                         onClick={() => setSelected(p)}
                         className="cursor-pointer border-b border-grid hover:bg-wash"
                       >
-                        <td className="py-2 pr-3 font-medium">{p.name}</td>
+                        <td className="py-2 pr-3 font-medium">
+                          {p.name}
+                          {overrides[p.name] && (
+                            <span className="ml-1.5 rounded border border-bdr px-1 py-0.5 text-[10px] text-accent">
+                              本場
+                            </span>
+                          )}
+                        </td>
                         <td className="py-2 pr-3 text-ink2">{p.cls}</td>
                         <td className="py-2 pr-3">
                           {teams[p.name]?.subRole ? (
@@ -945,6 +1169,8 @@ function TeamsTab({
             </section>
           );
         }
+      )}
+        </>
       )}
 
       {selected && (

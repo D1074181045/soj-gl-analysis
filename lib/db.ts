@@ -69,6 +69,13 @@ CREATE TABLE IF NOT EXISTS team_assignments (
   sub_role TEXT,            -- 保鑣 | 扛拆 | 空拆 | NULL
   PRIMARY KEY (user_id, player_name)
 );
+CREATE TABLE IF NOT EXISTS match_team_assignments (
+  match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  player_name TEXT NOT NULL,
+  main_team TEXT NOT NULL,  -- 進攻 | 機動 | 防守
+  sub_role TEXT,            -- 保鑣 | 扛拆 | 空拆 | NULL
+  PRIMARY KEY (match_id, player_name)
+);
 `);
 
 export default db;

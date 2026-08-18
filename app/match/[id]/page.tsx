@@ -2,7 +2,11 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import MatchView from "@/components/MatchView";
 import { getCurrentUser } from "@/lib/auth";
-import { getMatchForUser, getTeamAssignments } from "@/lib/data";
+import {
+  getMatchForUser,
+  getMatchTeamOverrides,
+  getTeamAssignments,
+} from "@/lib/data";
 
 export default async function MatchPage(props: PageProps<"/match/[id]">) {
   const { id } = await props.params;
@@ -11,6 +15,7 @@ export default async function MatchPage(props: PageProps<"/match/[id]">) {
   const match = getMatchForUser(Number(id), user.id);
   if (!match) notFound();
   const teams = getTeamAssignments(user.id);
+  const matchTeams = getMatchTeamOverrides(match.id);
 
   return (
     <div className="flex flex-col gap-4">
@@ -24,7 +29,7 @@ export default async function MatchPage(props: PageProps<"/match/[id]">) {
           </span>
         )}
       </div>
-      <MatchView match={match} teams={teams} />
+      <MatchView match={match} teams={teams} matchTeams={matchTeams} />
     </div>
   );
 }
