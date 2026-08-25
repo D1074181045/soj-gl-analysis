@@ -148,9 +148,17 @@ export default function PlayerDetailModal({
 
   const mates = assignment ? teamGroups.get(assignment.mainTeam)! : [];
 
+  // 本團貢獻：通用指標＋依職業加上化羽/清泉（素問/潮光）或焚骨（九靈）
   const teamContributions = useMemo(() => {
     if (!assignment) return [];
-    return CONTRIB_METRICS.map(({ key, label }) => {
+    const metrics: { key: keyof PlayerStats; label: string }[] = [
+      ...CONTRIB_METRICS,
+      { key: "purify", label: "化羽/清泉" },
+      { key: "burn", label: "焚骨" },
+    ];
+    return metrics
+      .filter(({ key }) => metricAppliesToClass(key as string, player.cls))
+      .map(({ key, label }) => {
         const value = numOf(player, key);
         const total = mates.reduce((s, p) => s + numOf(p, key), 0);
         const rank = mates.filter((p) => numOf(p, key) > value).length + 1;
@@ -159,14 +167,19 @@ export default function PlayerDetailModal({
       .filter((c) => c.teamTotal > 0);
   }, [assignment, player, mates]);
 
-  const TEAM_COMPARE_METRICS: { key: keyof PlayerStats; label: string; fmt: (n: number) => string }[] = [
+  // 與各團對比：素問/潮光多化羽/清泉、九靈多焚骨
+  const TEAM_COMPARE_METRICS: { key: keyof PlayerStats; label: string; fmt: (n: number) => string }[] = ([
     { key: "playerDamage", label: "對玩家傷害", fmt: fmtCompact },
     { key: "buildingDamage", label: "對建築傷害", fmt: fmtCompact },
     { key: "healing", label: "治療值", fmt: fmtCompact },
     { key: "damageTaken", label: "承受傷害", fmt: fmtCompact },
     { key: "kills", label: "擊敗", fmt: fmtInt },
     { key: "assists", label: "助攻", fmt: fmtInt },
-  ];
+    { key: "purify", label: "化羽/清泉", fmt: fmtInt },
+    { key: "burn", label: "焚骨", fmt: fmtInt },
+  ] as { key: keyof PlayerStats; label: string; fmt: (n: number) => string }[]).filter(
+    (m) => metricAppliesToClass(m.key as string, player.cls)
+  );
   const teamMetricDef =
     TEAM_COMPARE_METRICS.find((m) => m.key === teamMetric) ?? TEAM_COMPARE_METRICS[0];
 
@@ -349,7 +362,7 @@ export default function PlayerDetailModal({
             </div>
 
             <h4 className="mb-3 mt-6 text-sm font-semibold text-ink2">
-              與各團輸出對比
+              與各團對比
             </h4>
             <div className="mb-3 flex flex-wrap gap-1.5">
               {TEAM_COMPARE_METRICS.map((m) => (
