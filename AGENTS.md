@@ -52,13 +52,14 @@ Next.js 16（App Router、Turbopack）+ TypeScript + Tailwind 4 + better-sqlite3
 
 ### UI 層
 
-- **`components/MatchView.tsx`**：單場戰報主元件，三分頁（總覽／職業統計／玩家數據）。兩種 modal 可互相導覽：`ClassDetailModal`（職業詳情，含成員清單）→ 點成員開 `PlayerDetailModal`，關閉後回到職業詳情（靠 `selectedCls && !selectedPlayer` 條件渲染實現）。
+- **`components/MatchView.tsx`**：單場戰報主元件，四分頁（總覽／職業統計／玩家數據／分團統計）。分團統計含「調整本場分團」編輯模式（僅擁有者，優先級：本場調整 > 統一配置）。兩種 modal 可互相導覽：`ClassDetailModal`（職業詳情，含成員清單）→ 點成員開 `PlayerDetailModal`，關閉後回到職業詳情（靠 `selectedCls && !selectedPlayer` 條件渲染實現）。
 - **`components/viz.tsx`**：共用視覺化元件（`CompareRow` 雙向對比條、`ContributionMeter` 佔比量表、`StatTile`、`SeriesLegend`、Recharts 自訂 tooltip）。
+- **`components/sortable.tsx`**：表格排序共用件（`useSortable`／`useSortedPlayers` hook、`SortTh` 標頭、`playerSortValue` 含 KDA 虛擬欄位）。**所有玩家列表都要可點欄位排序**（玩家數據、各團成員表、職業詳情成員表、陣容配置、本場調整表皆已套用）；數值欄預設由大到小、文字欄由小到大。
 
 ### 領域規則
 
 - 欄位語意：**重傷 = 死亡次數**；KDA =（擊敗＋助攻）÷ max(重傷, 1)（`lib/format.ts` 的 `kdaOf`）。
-- **職業專屬指標**（`lib/types.ts` 的 `metricAppliesToClass`）：化羽/清泉只屬於素問與潮光、焚骨只屬於九靈。任何顯示這兩個指標的新 UI 都必須套用此過濾。
+- **職業專屬指標**（`lib/types.ts` 的 `metricAppliesToClass`）：化羽/清泉只屬於素問與潮光、焚骨只屬於九靈。顯示位置規則：**同職業比較**（與同職業平均、與對方同職業平均）與職業/成員表格要依職業顯示；**跨職業的佔比區塊**（全隊貢獻佔比、本團貢獻）一律不顯示這兩個指標，因為跨職業佔比無意義。
 - **分團**（以「使用者＋玩家名字」為鍵、跨場次共用的 `team_assignments`，加上以「場次＋玩家名字」為鍵的單場覆寫 `match_team_assignments`，**優先級：本場調整 > 統一陣容配置**，合併在 `MatchView` 的 `effectiveTeams`）：主團＝進攻/機動/防守必選三選一；副職＝保鑣/扛拆/空拆可不選、選則三選一（`lib/types.ts` 的 `MAIN_TEAMS`/`SUB_ROLES`，server action 有驗證）。統一配置在 `/teams`，單場調整在戰報「分團統計」分頁的編輯模式（僅擁有者）。戰報分團分頁與玩家詳情的團隊區塊都是用名字 join；分享頁由場次反查擁有者設定（`getTeamAssignmentsByMatch`）再疊上該場覆寫。
 - **配色是經過色盲驗證的固定規則**：我方＝藍 `var(--ally)`、對方＝橘 `var(--enemy)`（檢視對方視角的詳情時兩色互換，見 modal 內的 `ownColor`/`oppColor`）。設計 token 全在 `app/globals.css`（明暗雙模式，經 `@theme inline` 映射成 Tailwind 類別如 `bg-surface`、`text-ink`、`border-bdr`），新 UI 用這些 token，不要另外挑色。
 - 大數值以 `fmtCompact` 壓縮（萬/億），完整值放 `title` 屬性；表格數字加 `tabular-nums`。

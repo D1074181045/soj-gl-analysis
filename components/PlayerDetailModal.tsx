@@ -6,6 +6,7 @@ import { MAIN_TEAMS, metricAppliesToClass } from "@/lib/types";
 import { fmtAvg, fmtCompact, fmtInt, fmtKda } from "@/lib/format";
 import { ALLY_COLOR, ENEMY_COLOR, CompareRow, ContributionMeter, SeriesLegend, StatTile } from "./viz";
 
+// 全隊/本團貢獻佔比：不含化羽/焚骨（職業專屬指標，跨職業佔比無意義）
 const CONTRIB_METRICS: { key: keyof PlayerStats; label: string }[] = [
   { key: "kills", label: "擊敗" },
   { key: "assists", label: "助攻" },
@@ -14,10 +15,9 @@ const CONTRIB_METRICS: { key: keyof PlayerStats; label: string }[] = [
   { key: "healing", label: "治療值" },
   { key: "damageTaken", label: "承受傷害" },
   { key: "resources", label: "資源" },
-  { key: "purify", label: "化羽/清泉" },
-  { key: "burn", label: "焚骨" },
 ];
 
+// 與同職業平均比較：化羽/焚骨依職業顯示（素問/潮光=化羽清泉、九靈=焚骨）
 const VS_CLASS_METRICS: { key: keyof PlayerStats; label: string }[] = [
   { key: "kills", label: "擊敗" },
   { key: "deaths", label: "重傷" },
@@ -25,6 +25,8 @@ const VS_CLASS_METRICS: { key: keyof PlayerStats; label: string }[] = [
   { key: "playerDamage", label: "對玩家傷害" },
   { key: "healing", label: "治療值" },
   { key: "damageTaken", label: "承受傷害" },
+  { key: "purify", label: "化羽/清泉" },
+  { key: "burn", label: "焚骨" },
 ];
 
 // 與對方同職業平均比較的指標（化羽/焚骨依職業過濾）
@@ -74,10 +76,7 @@ export default function PlayerDetailModal({
   }, [onClose]);
 
   const contributions = useMemo(() => {
-    return CONTRIB_METRICS.filter(({ key }) =>
-      metricAppliesToClass(key as string, player.cls)
-    )
-      .map(({ key, label }) => {
+    return CONTRIB_METRICS.map(({ key, label }) => {
       const value = numOf(player, key);
       const total = team.reduce((s, p) => s + numOf(p, key), 0);
       const rank =
@@ -99,7 +98,9 @@ export default function PlayerDetailModal({
   );
 
   const vsClass = useMemo(() => {
-    return VS_CLASS_METRICS.map(({ key, label }) => {
+    return VS_CLASS_METRICS.filter(({ key }) =>
+      metricAppliesToClass(key as string, player.cls)
+    ).map(({ key, label }) => {
       const value = numOf(player, key);
       const avg =
         classmates.reduce((s, p) => s + numOf(p, key), 0) /
@@ -149,10 +150,7 @@ export default function PlayerDetailModal({
 
   const teamContributions = useMemo(() => {
     if (!assignment) return [];
-    return CONTRIB_METRICS.filter(({ key }) =>
-      metricAppliesToClass(key as string, player.cls)
-    )
-      .map(({ key, label }) => {
+    return CONTRIB_METRICS.map(({ key, label }) => {
         const value = numOf(player, key);
         const total = mates.reduce((s, p) => s + numOf(p, key), 0);
         const rank = mates.filter((p) => numOf(p, key) > value).length + 1;
