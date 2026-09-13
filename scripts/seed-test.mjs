@@ -51,6 +51,16 @@ db.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)")
   Date.now() + 86400000
 );
 
+// 直接以 SQL 建帳號會略過註冊流程的預設清單，這裡補上（與 lib/db.ts 的預設一致）
+const seedList = (table, names) => {
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO ${table} (user_id, name, sort_order) VALUES (?, ?, ?)`
+  );
+  names.forEach((n, i) => ins.run(userId, n, i));
+};
+seedList("user_teams", ["進攻", "機動", "防守"]);
+seedList("user_sub_roles", ["保鑣", "扛拆", "空拆"]);
+
 // 匯入 CSV
 const csvDir = path.resolve(process.cwd(), "..");
 const files = fs.readdirSync(csvDir).filter((f) => f.endsWith(".csv"));

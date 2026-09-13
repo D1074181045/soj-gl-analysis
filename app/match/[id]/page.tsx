@@ -6,6 +6,8 @@ import {
   getMatchForUser,
   getMatchTeamOverrides,
   getTeamAssignments,
+  getUserSubRoles,
+  getUserTeams,
 } from "@/lib/data";
 
 export default async function MatchPage(props: PageProps<"/match/[id]">) {
@@ -16,6 +18,8 @@ export default async function MatchPage(props: PageProps<"/match/[id]">) {
   if (!match) notFound();
   const teams = getTeamAssignments(user.id);
   const matchTeams = getMatchTeamOverrides(match.id);
+  const teamNames = getUserTeams(user.id).map((t) => t.name);
+  const subRoleNames = getUserSubRoles(user.id).map((s) => s.name);
 
   return (
     <div className="flex flex-col gap-4">
@@ -29,7 +33,13 @@ export default async function MatchPage(props: PageProps<"/match/[id]">) {
           </span>
         )}
       </div>
-      <MatchView match={match} teams={teams} matchTeams={matchTeams} />
+      <MatchView
+        match={match}
+        teams={teams}
+        matchTeams={matchTeams}
+        teamNames={teamNames}
+        subRoleNames={subRoleNames}
+      />
     </div>
   );
 }

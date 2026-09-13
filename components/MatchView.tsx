@@ -12,7 +12,7 @@ import {
   YAxis,
 } from "recharts";
 import type { MatchDetail, PlayerStats, TeamMap } from "@/lib/types";
-import { MAIN_TEAMS, SUB_ROLES } from "@/lib/types";
+import { UNASSIGNED_LABEL, teamLabel } from "@/lib/types";
 import {
   clearMatchTeamAssignmentAction,
   setMatchTeamAssignmentAction,
@@ -75,11 +75,15 @@ export default function MatchView({
   match,
   teams = {},
   matchTeams = {},
+  teamNames = [],
+  subRoleNames = [],
   shareBanner = false,
 }: {
   match: MatchDetail;
   teams?: TeamMap; // 統一陣容配置
   matchTeams?: TeamMap; // 本場調整（優先）
+  teamNames?: string[]; // 使用者自訂主團清單（依排序）
+  subRoleNames?: string[]; // 使用者自訂副職清單（依排序）
   shareBanner?: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("overview");
@@ -89,6 +93,16 @@ export default function MatchView({
     () => ({ ...teams, ...overrides }),
     [teams, overrides]
   );
+  // 主團順序依清單；設定中出現但清單沒有的名稱補在最後（防呆）
+  const allTeamNames = useMemo(() => {
+    const extra: string[] = [];
+    for (const a of Object.values(effectiveTeams)) {
+      if (!teamNames.includes(a.mainTeam) && !extra.includes(a.mainTeam)) {
+        extra.push(a.mainTeam);
+      }
+    }
+    return [...teamNames, ...extra];
+  }, [teamNames, effectiveTeams]);
   const legendItems = [
     { label: match.allyName, color: ALLY_COLOR },
     { label: match.enemyName, color: ENEMY_COLOR },
@@ -100,7 +114,7 @@ export default function MatchView({
     ["players", "玩家數據"],
   ];
   // 分享檢視只在擁有者有設定分團時才顯示此分頁
-  if (!shareBanner || hasTeams) tabList.push(["teams", "分團統計"]);
+  if (!shareBanner || hasTeams) tabList.push(["teams", "分團分析"]);
 
   return (
     <div className="flex flex-col gap-5">
@@ -144,16 +158,24 @@ export default function MatchView({
 
       {tab === "overview" && <OverviewTab match={match} legendItems={legendItems} />}
       {tab === "class" && (
-        <ClassTab match={match} teams={effectiveTeams} legendItems={legendItems} />
+        <ClassTab
+          match={match}
+          teams={effectiveTeams}
+          teamNames={allTeamNames}
+          legendItems={legendItems}
+        />
       )}
-      {tab === "players" && <PlayersTab match={match} teams={effectiveTeams} />}
+      {tab === "players" && (
+        <PlayersTab match={match} teams={effectiveTeams} teamNames={allTeamNames} />
+      )}
       {tab === "teams" && (
         <TeamsTab
           match={match}
           teams={effectiveTeams}
-          globalTeams={teams}
           overrides={overrides}
           setOverrides={setOverrides}
+          teamNames={allTeamNames}
+          subRoleNames={subRoleNames}
           isOwner={!shareBanner}
         />
       )}
@@ -287,10 +309,12 @@ function OverviewTab({
 function ClassTab({
   match,
   teams,
+  teamNames,
   legendItems,
 }: {
   match: MatchDetail;
   teams: TeamMap;
+  teamNames: string[];
   legendItems: { label: string; color: string }[];
 }) {
   const [metric, setMetric] = useState<MetricKey>("kills");
@@ -486,6 +510,7 @@ function ClassTab({
           opponents={tableSide === 0 ? match.enemy : match.ally}
           opponentName={tableSide === 0 ? match.enemyName : match.allyName}
           teams={teams}
+          teamNames={teamNames}
           onClose={() => setSelectedPlayer(null)}
         />
       )}
@@ -513,7 +538,15 @@ const PLAYER_COLUMNS: { key: SortKey; label: string; numeric: boolean }[] = [
   { key: "resources", label: "資源", numeric: true },
 ];
 
-function PlayersTab({ match, teams }: { match: MatchDetail; teams: TeamMap }) {
+function PlayersTab({
+  match,
+  teams,
+  teamNames,
+}: {
+  match: MatchDetail;
+  teams: TeamMap;
+  teamNames: string[];
+}) {
   const [side, setSide] = useState<0 | 1>(0);
   const [clsFilter, setClsFilter] = useState<string>("");
   const [search, setSearch] = useState("");
@@ -697,6 +730,7 @@ function PlayersTab({ match, teams }: { match: MatchDetail; teams: TeamMap }) {
           opponents={side === 0 ? match.enemy : match.ally}
           opponentName={side === 0 ? match.enemyName : match.allyName}
           teams={teams}
+          teamNames={teamNames}
           onClose={() => setSelected(null)}
         />
       )}
@@ -715,24 +749,29 @@ const TEAM_METRICS: { key: MetricKey; label: string; fmt: (n: number) => string 
   { key: "resources", label: "資源", fmt: fmtInt },
 ];
 
+const labelOf = (t: string) => (t === UNASSIGNED_LABEL ? t : teamLabel(t));
+
 function TeamsTab({
   match,
   teams,
-  globalTeams,
   overrides,
   setOverrides,
+  teamNames,
+  subRoleNames,
   isOwner,
 }: {
   match: MatchDetail;
   teams: TeamMap; // 生效設定（統一配置 + 本場調整）
-  globalTeams: TeamMap;
   overrides: TeamMap;
   setOverrides: React.Dispatch<React.SetStateAction<TeamMap>>;
+  teamNames: string[]; // 使用者自訂主團清單（依排序）
+  subRoleNames: string[]; // 使用者自訂副職清單（依排序）
   isOwner: boolean;
 }) {
   const [metric, setMetric] = useState<MetricKey>("playerDamage");
   const [mode, setMode] = useState<"total" | "avg">("total");
   const [selected, setSelected] = useState<PlayerStats | null>(null);
+  const [activeTeam, setActiveTeam] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [editSearch, setEditSearch] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
@@ -740,13 +779,7 @@ function TeamsTab({
   const [isPending, startTransition] = useTransition();
 
   const setOverride = (name: string, mainTeam: string, subRole: string | null) => {
-    setOverrides((m) => ({
-      ...m,
-      [name]: {
-        mainTeam: mainTeam as (typeof MAIN_TEAMS)[number],
-        subRole: subRole as (typeof SUB_ROLES)[number] | null,
-      },
-    }));
+    setOverrides((m) => ({ ...m, [name]: { mainTeam, subRole } }));
     setEditError(null);
     startTransition(async () => {
       const res = await setMatchTeamAssignmentAction(
@@ -770,43 +803,59 @@ function TeamsTab({
     });
   };
 
+  // 依主團清單順序分組；未分團另列
   const groups = useMemo(() => {
     const g = new Map<string, PlayerStats[]>();
-    for (const t of MAIN_TEAMS) g.set(t, []);
-    g.set("未分團", []);
+    for (const t of teamNames) g.set(t, []);
+    g.set(UNASSIGNED_LABEL, []);
     for (const p of match.ally) {
       const a = teams[p.name];
-      g.get(a ? a.mainTeam : "未分團")!.push(p);
+      const key = a ? a.mainTeam : UNASSIGNED_LABEL;
+      if (!g.has(key)) g.set(key, []);
+      g.get(key)!.push(p);
     }
     for (const list of g.values()) {
       list.sort((a, b) => b.playerDamage - a.playerDamage);
     }
     return g;
-  }, [match, teams]);
+  }, [match, teams, teamNames]);
 
-  const unassigned = groups.get("未分團")!;
+  const unassigned = groups.get(UNASSIGNED_LABEL)!;
   const assignedCount = match.ally.length - unassigned.length;
+
+  // 只顯示本場有成員的分團；未分團有人時附在最後
+  const displayTeams = useMemo(() => {
+    const present = [...groups.keys()].filter(
+      (t) => t !== UNASSIGNED_LABEL && groups.get(t)!.length > 0
+    );
+    return unassigned.length ? [...present, UNASSIGNED_LABEL] : present;
+  }, [groups, unassigned.length]);
+
+  const activeMembers = activeTeam ? (groups.get(activeTeam) ?? []) : [];
 
   const metricDef = TEAM_METRICS.find((m) => m.key === metric)!;
   const chartData = useMemo(
     () =>
-      [...MAIN_TEAMS.map((t) => t as string), ...(unassigned.length ? ["未分團"] : [])].map(
-        (t) => {
-          const members = groups.get(t)!;
-          const total = sum(members, metric);
-          return {
-            team: t === "未分團" ? t : `${t}團`,
-            value: mode === "total" ? total : members.length ? total / members.length : 0,
-          };
-        }
-      ),
-    [groups, metric, mode, unassigned.length]
+      displayTeams.map((t) => {
+        const members = groups.get(t)!;
+        const total = sum(members, metric);
+        return {
+          team: labelOf(t),
+          value: mode === "total" ? total : members.length ? total / members.length : 0,
+        };
+      }),
+    [displayTeams, groups, metric, mode]
   );
+
+  const teamOrderIndex = (name: string) => {
+    const i = teamNames.indexOf(name);
+    return i === -1 ? teamNames.length : i;
+  };
 
   if (assignedCount === 0 && !editMode) {
     return (
       <div className="rounded-xl border border-dashed border-baseline p-10 text-center text-sm text-muted">
-        尚未設定任何分團。
+        本場成員尚未有任何分團設定。
         {isOwner && (
           <>
             可到「
@@ -832,7 +881,7 @@ function TeamsTab({
       {isOwner && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-muted">
-            分團優先級：本場調整 &gt; 統一陣容配置；帶「本場」標記者為此場專屬設定。
+            分團優先級：本場調整 &gt; 統一陣容配置；帶「本場」標記者為此場專屬設定。只列出本場有成員的分團。
           </p>
           <div className="flex items-center gap-3">
             {editMode && (
@@ -900,7 +949,7 @@ function TeamsTab({
                   .sort((a, b) => {
                     const teamOrder = (p: PlayerStats) => {
                       const t = teams[p.name];
-                      return t ? MAIN_TEAMS.indexOf(t.mainTeam) : MAIN_TEAMS.length;
+                      return t ? teamOrderIndex(t.mainTeam) : teamNames.length + 1;
                     };
                     const valueOf = (p: PlayerStats): number | string =>
                       editSort.key === "name"
@@ -928,49 +977,59 @@ function TeamsTab({
                         <td className="py-1.5 pr-3 font-medium">{p.name}</td>
                         <td className="py-1.5 pr-3 text-ink2">{p.cls}</td>
                         <td className="py-1.5 pr-3">
-                          <div className="flex gap-1">
-                            {MAIN_TEAMS.map((t) => (
-                              <button
-                                key={t}
-                                onClick={() => {
-                                  if (eff?.mainTeam === t) return;
-                                  setOverride(p.name, t, eff?.subRole ?? null);
-                                }}
-                                className={`rounded-md px-2.5 py-1 text-xs cursor-pointer ${
-                                  eff?.mainTeam === t
-                                    ? "bg-accent text-white"
-                                    : "border border-bdr text-ink2 hover:bg-wash"
-                                }`}
-                              >
-                                {t}
-                              </button>
-                            ))}
-                          </div>
+                          {teamNames.length === 0 ? (
+                            <span className="text-xs text-muted">
+                              尚未建立分團，請先到「陣容配置」新增
+                            </span>
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {teamNames.map((t) => (
+                                <button
+                                  key={t}
+                                  onClick={() => {
+                                    if (eff?.mainTeam === t) return;
+                                    setOverride(p.name, t, eff?.subRole ?? null);
+                                  }}
+                                  className={`rounded-md px-2.5 py-1 text-xs cursor-pointer ${
+                                    eff?.mainTeam === t
+                                      ? "bg-accent text-white"
+                                      : "border border-bdr text-ink2 hover:bg-wash"
+                                  }`}
+                                >
+                                  {t}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </td>
                         <td className="py-1.5 pr-3">
-                          <div className="flex gap-1">
-                            {SUB_ROLES.map((s) => (
-                              <button
-                                key={s}
-                                onClick={() => {
-                                  if (!eff) return;
-                                  const next = eff.subRole === s ? null : s;
-                                  setOverride(p.name, eff.mainTeam, next);
-                                }}
-                                disabled={!eff}
-                                title={eff ? undefined : "請先選擇主團"}
-                                className={`rounded-md px-2.5 py-1 text-xs ${
-                                  eff?.subRole === s
-                                    ? "bg-accent text-white cursor-pointer"
-                                    : eff
-                                      ? "border border-bdr text-ink2 hover:bg-wash cursor-pointer"
-                                      : "border border-bdr text-muted opacity-50 cursor-not-allowed"
-                                }`}
-                              >
-                                {s}
-                              </button>
-                            ))}
-                          </div>
+                          {subRoleNames.length === 0 ? (
+                            <span className="text-xs text-muted">—</span>
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {subRoleNames.map((s) => (
+                                <button
+                                  key={s}
+                                  onClick={() => {
+                                    if (!eff) return;
+                                    const next = eff.subRole === s ? null : s;
+                                    setOverride(p.name, eff.mainTeam, next);
+                                  }}
+                                  disabled={!eff}
+                                  title={eff ? undefined : "請先選擇主團"}
+                                  className={`rounded-md px-2.5 py-1 text-xs ${
+                                    eff?.subRole === s
+                                      ? "bg-accent text-white cursor-pointer"
+                                      : eff
+                                        ? "border border-bdr text-ink2 hover:bg-wash cursor-pointer"
+                                        : "border border-bdr text-muted opacity-50 cursor-not-allowed"
+                                  }`}
+                                >
+                                  {s}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </td>
                         <td className="py-1.5 pr-3 text-xs">
                           {isOverridden ? (
@@ -1003,17 +1062,37 @@ function TeamsTab({
 
       {assignedCount > 0 && (
         <>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {MAIN_TEAMS.map((t) => {
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {displayTeams.map((t) => {
           const members = groups.get(t)!;
+          const isUn = t === UNASSIGNED_LABEL;
+          const active = activeTeam === t;
           const k = sum(members, "kills");
           const d = sum(members, "deaths");
           const a = sum(members, "assists");
+          const toggle = () => setActiveTeam(active ? null : t);
           return (
-            <div key={t} className="rounded-xl border border-bdr bg-surface p-4">
+            <div
+              key={t}
+              role="button"
+              tabIndex={0}
+              aria-pressed={active}
+              onClick={toggle}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggle();
+                }
+              }}
+              className={`rounded-xl border bg-surface p-4 cursor-pointer transition-colors hover:bg-wash ${
+                active ? "border-accent ring-1 ring-accent" : "border-bdr"
+              } ${isUn ? "opacity-80" : ""}`}
+            >
               <div className="flex items-baseline justify-between">
-                <h3 className="font-semibold">{t}團</h3>
-                <span className="text-xs text-muted">{members.length} 人</span>
+                <h3 className="font-semibold">{labelOf(t)}</h3>
+                <span className="text-xs text-muted">
+                  {members.length} 人・{active ? "已展開" : "點選看成員"}
+                </span>
               </div>
               <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 text-sm tabular-nums">
                 <dt className="text-muted">KDA</dt>
@@ -1036,6 +1115,22 @@ function TeamsTab({
           );
         })}
       </div>
+
+      {activeTeam && activeMembers.length > 0 ? (
+        <TeamMemberSection
+          key={activeTeam}
+          title={labelOf(activeTeam)}
+          members={activeMembers}
+          teams={teams}
+          overrides={overrides}
+          onSelect={setSelected}
+          onClose={() => setActiveTeam(null)}
+        />
+      ) : (
+        <p className="text-center text-xs text-muted">
+          點選上方分團卡片可展開該團成員列表，再點一次收合。
+        </p>
+      )}
 
       <section className="rounded-xl border border-bdr bg-surface p-5">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -1117,22 +1212,6 @@ function TeamsTab({
         </ResponsiveContainer>
       </section>
 
-      {[...MAIN_TEAMS.map((t) => t as string), ...(unassigned.length ? ["未分團"] : [])].map(
-        (t) => {
-          const members = groups.get(t)!;
-          if (members.length === 0) return null;
-          return (
-            <TeamMemberSection
-              key={t}
-              title={t === "未分團" ? "未分團" : `${t}團`}
-              members={members}
-              teams={teams}
-              overrides={overrides}
-              onSelect={setSelected}
-            />
-          );
-        }
-      )}
         </>
       )}
 
@@ -1145,6 +1224,7 @@ function TeamsTab({
           opponents={match.enemy}
           opponentName={match.enemyName}
           teams={teams}
+          teamNames={teamNames}
           onClose={() => setSelected(null)}
         />
       )}
@@ -1159,22 +1239,34 @@ function TeamMemberSection({
   teams,
   overrides,
   onSelect,
+  onClose,
 }: {
   title: string;
   members: PlayerStats[];
   teams: TeamMap;
   overrides: TeamMap;
   onSelect: (p: PlayerStats) => void;
+  onClose?: () => void;
 }) {
   const { sorted, sort } = useSortedPlayers(members, "playerDamage");
   return (
     <section className="rounded-xl border border-bdr bg-surface p-5">
-      <h2 className="mb-3 font-semibold">
-        {title}
-        <span className="ml-2 text-xs font-normal text-muted">
-          {members.length} 人・點欄位標題可排序・點選列看玩家詳情
-        </span>
-      </h2>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="font-semibold">
+          {title}
+          <span className="ml-2 text-xs font-normal text-muted">
+            {members.length} 人・點欄位標題可排序・點選列看玩家詳情
+          </span>
+        </h2>
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="rounded-md border border-bdr px-2.5 py-1 text-xs text-ink2 hover:bg-wash cursor-pointer"
+          >
+            收合
+          </button>
+        )}
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>

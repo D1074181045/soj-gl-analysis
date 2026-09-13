@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { PlayerStats, TeamMap } from "@/lib/types";
-import { MAIN_TEAMS, metricAppliesToClass } from "@/lib/types";
+import { metricAppliesToClass, teamLabel } from "@/lib/types";
 import { fmtAvg, fmtCompact, fmtInt, fmtKda } from "@/lib/format";
 import { ALLY_COLOR, ENEMY_COLOR, CompareRow, ContributionMeter, SeriesLegend, StatTile } from "./viz";
 
@@ -58,6 +58,7 @@ export default function PlayerDetailModal({
   opponents,
   opponentName,
   teams,
+  teamNames,
   onClose,
 }: {
   player: PlayerStats;
@@ -67,6 +68,7 @@ export default function PlayerDetailModal({
   opponents: PlayerStats[];
   opponentName: string;
   teams?: TeamMap;
+  teamNames?: string[];
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -136,19 +138,21 @@ export default function PlayerDetailModal({
 
   const teamGroups = useMemo(() => {
     const g = new Map<string, PlayerStats[]>();
-    for (const t of MAIN_TEAMS) g.set(t, []);
+    for (const t of teamNames ?? []) g.set(t, []);
     if (sideLabel === "我方" && teams) {
       for (const p of team) {
         const a = teams[p.name];
-        if (a) g.get(a.mainTeam)!.push(p);
+        if (!a) continue;
+        if (!g.has(a.mainTeam)) g.set(a.mainTeam, []);
+        g.get(a.mainTeam)!.push(p);
       }
     }
     return g;
-  }, [team, teams, sideLabel]);
+  }, [team, teams, sideLabel, teamNames]);
 
-  const mates = assignment ? teamGroups.get(assignment.mainTeam)! : [];
+  const mates = assignment ? teamGroups.get(assignment.mainTeam) ?? [] : [];
 
-  // 本團貢獻：通用指標＋依職業加上化羽/清泉（素問/潮光）或焚骨（九靈）
+  // 本團貢獻：通用指標以全團為比較對象；化羽/清泉、焚骨只與本團「同職業」比較
   const teamContributions = useMemo(() => {
     if (!assignment) return [];
     const metrics: { key: keyof PlayerStats; label: string }[] = [
@@ -159,10 +163,23 @@ export default function PlayerDetailModal({
     return metrics
       .filter(({ key }) => metricAppliesToClass(key as string, player.cls))
       .map(({ key, label }) => {
+        const classSpecific = key === "purify" || key === "burn";
+        const peers = classSpecific
+          ? mates.filter((p) => p.cls === player.cls)
+          : mates;
         const value = numOf(player, key);
-        const total = mates.reduce((s, p) => s + numOf(p, key), 0);
-        const rank = mates.filter((p) => numOf(p, key) > value).length + 1;
-        return { key, label, value, ratio: total > 0 ? value / total : 0, rank, teamTotal: total };
+        const total = peers.reduce((s, p) => s + numOf(p, key), 0);
+        const rank = peers.filter((p) => numOf(p, key) > value).length + 1;
+        return {
+          key,
+          label,
+          value,
+          ratio: total > 0 ? value / total : 0,
+          rank,
+          teamTotal: total,
+          peerCount: peers.length,
+          scope: classSpecific ? `本團${player.cls}` : "本團",
+        };
       })
       .filter((c) => c.teamTotal > 0);
   }, [assignment, player, mates]);
@@ -209,7 +226,7 @@ export default function PlayerDetailModal({
               {assignment && (
                 <span className="ml-2 inline-flex gap-1">
                   <span className="rounded border border-bdr px-1.5 py-0.5 text-xs text-ink2">
-                    {assignment.mainTeam}團
+                    {teamLabel(assignment.mainTeam)}
                   </span>
                   {assignment.subRole && (
                     <span className="rounded border border-bdr px-1.5 py-0.5 text-xs text-ink2">
@@ -343,7 +360,7 @@ export default function PlayerDetailModal({
         {assignment && (
           <>
             <h4 className="mb-3 mt-6 text-sm font-semibold text-ink2">
-              本團貢獻（{assignment.mainTeam}團 {mates.length} 人
+              本團貢獻（{teamLabel(assignment.mainTeam)} {mates.length} 人
               {assignment.subRole && `・副職 ${assignment.subRole}`}）
             </h4>
             <div className="flex flex-col gap-3.5">
@@ -354,9 +371,9 @@ export default function PlayerDetailModal({
                   value={c.value}
                   ratio={c.ratio}
                   rank={c.rank}
-                  total={mates.length}
+                  total={c.peerCount}
                   fmt={fmtCompact}
-                  scope="本團"
+                  scope={c.scope}
                 />
               ))}
             </div>
@@ -381,24 +398,35 @@ export default function PlayerDetailModal({
             </div>
             <div className="flex flex-col gap-2.5">
               {(() => {
-                const rows = MAIN_TEAMS.map((t) => {
-                  const members = teamGroups.get(t)!;
-                  return {
-                    team: t,
-                    count: members.length,
-                    total: members.reduce(
-                      (s, p) => s + numOf(p, teamMetricDef.key),
-                      0
-                    ),
-                  };
-                }).filter((r) => r.count > 0);
+                // 化羽/清泉、焚骨只與各團「同職業」成員比較，其餘與全團比較
+                const classSpecific =
+                  teamMetricDef.key === "purify" || teamMetricDef.key === "burn";
+                const rows = [...teamGroups.keys()]
+                  .map((t) => {
+                    const all = teamGroups.get(t) ?? [];
+                    const members = classSpecific
+                      ? all.filter((p) => p.cls === player.cls)
+                      : all;
+                    return {
+                      team: t,
+                      count: members.length,
+                      total: members.reduce(
+                        (s, p) => s + numOf(p, teamMetricDef.key),
+                        0
+                      ),
+                    };
+                  })
+                  .filter((r) => r.count > 0);
                 const max = Math.max(...rows.map((r) => r.total), 1);
                 const own = numOf(player, teamMetricDef.key);
                 return rows.map((r) => (
                   <div key={r.team} className="flex items-center gap-3">
-                    <span className="w-24 shrink-0 text-sm text-ink2">
-                      {r.team}團
-                      <span className="ml-1 text-xs text-muted">{r.count}人</span>
+                    <span className="w-28 shrink-0 text-sm text-ink2">
+                      {teamLabel(r.team)}
+                      <span className="ml-1 text-xs text-muted">
+                        {r.count}
+                        {classSpecific ? `位${player.cls}` : "人"}
+                      </span>
                     </span>
                     <div className="h-3.5 flex-1">
                       <div
@@ -423,8 +451,8 @@ export default function PlayerDetailModal({
                 ));
               })()}
               <p className="mt-1 text-xs text-muted">
-                藍色為本人所屬的{assignment.mainTeam}
-                團，灰色為其他團；「本人佔」為本人數值相對該團總量的比例。
+                藍色為本人所屬的{teamLabel(assignment.mainTeam)}
+                ，灰色為其他團；「本人佔」為本人數值相對該團總量的比例。化羽/清泉與焚骨只與各團同職業成員比較。
               </p>
             </div>
           </>

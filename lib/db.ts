@@ -76,6 +76,65 @@ CREATE TABLE IF NOT EXISTS match_team_assignments (
   sub_role TEXT,            -- 保鑣 | 扛拆 | 空拆 | NULL
   PRIMARY KEY (match_id, player_name)
 );
+CREATE TABLE IF NOT EXISTS user_teams (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (user_id, name)
+);
+CREATE TABLE IF NOT EXISTS user_sub_roles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (user_id, name)
+);
+CREATE TABLE IF NOT EXISTS schema_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `);
+
+export const DEFAULT_TEAM_NAMES = ["進攻", "機動", "防守"];
+export const DEFAULT_SUB_ROLE_NAMES = ["保鑣", "扛拆", "空拆"];
+
+// 為使用者建立預設主團（註冊時與一次性遷移時使用）
+export function seedDefaultTeams(userId: number): void {
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO user_teams (user_id, name, sort_order) VALUES (?, ?, ?)"
+  );
+  DEFAULT_TEAM_NAMES.forEach((name, i) => insert.run(userId, name, i));
+}
+
+// 為使用者建立預設副職（註冊時與一次性遷移時使用）
+export function seedDefaultSubRoles(userId: number): void {
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO user_sub_roles (user_id, name, sort_order) VALUES (?, ?, ?)"
+  );
+  DEFAULT_SUB_ROLE_NAMES.forEach((name, i) => insert.run(userId, name, i));
+}
+
+// 一次性遷移：主團/副職改為可自訂前建立的帳號，補上預設清單
+function runOnce(key: string, fn: () => void): void {
+  const done = db
+    .prepare("SELECT value FROM schema_meta WHERE key = ?")
+    .get(key) as { value: string } | undefined;
+  if (done) return;
+  db.transaction(() => {
+    fn();
+    db.prepare("INSERT INTO schema_meta (key, value) VALUES (?, '1')").run(key);
+  })();
+}
+
+runOnce("teams_seeded", () => {
+  const users = db.prepare("SELECT id FROM users").all() as { id: number }[];
+  for (const u of users) seedDefaultTeams(u.id);
+});
+
+runOnce("sub_roles_seeded", () => {
+  const users = db.prepare("SELECT id FROM users").all() as { id: number }[];
+  for (const u of users) seedDefaultSubRoles(u.id);
+});
 
 export default db;

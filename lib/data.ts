@@ -7,6 +7,8 @@ import type {
   RosterEntry,
   SubRole,
   TeamMap,
+  UserSubRole,
+  UserTeam,
 } from "./types";
 
 interface PlayerRow {
@@ -201,4 +203,38 @@ export function getMatchTeamOverrides(matchId: number): TeamMap {
     map[r.player_name] = { mainTeam: r.main_team, subRole: r.sub_role };
   }
   return map;
+}
+
+// 使用者自訂的主團清單（依排序）
+export function getUserTeams(userId: number): UserTeam[] {
+  return db
+    .prepare(
+      "SELECT id, name FROM user_teams WHERE user_id = ? ORDER BY sort_order, id"
+    )
+    .all(userId) as UserTeam[];
+}
+
+// 分享頁用：由場次反查擁有者的主團清單
+export function getUserTeamsByMatch(matchId: number): UserTeam[] {
+  const row = db
+    .prepare("SELECT user_id FROM matches WHERE id = ?")
+    .get(matchId) as { user_id: number } | undefined;
+  return row ? getUserTeams(row.user_id) : [];
+}
+
+// 使用者自訂的副職清單（依排序）
+export function getUserSubRoles(userId: number): UserSubRole[] {
+  return db
+    .prepare(
+      "SELECT id, name FROM user_sub_roles WHERE user_id = ? ORDER BY sort_order, id"
+    )
+    .all(userId) as UserSubRole[];
+}
+
+// 分享頁用：由場次反查擁有者的副職清單
+export function getUserSubRolesByMatch(matchId: number): UserSubRole[] {
+  const row = db
+    .prepare("SELECT user_id FROM matches WHERE id = ?")
+    .get(matchId) as { user_id: number } | undefined;
+  return row ? getUserSubRoles(row.user_id) : [];
 }

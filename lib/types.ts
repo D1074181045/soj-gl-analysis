@@ -61,11 +61,26 @@ export function metricAppliesToClass(key: string, cls: string): boolean {
   return true;
 }
 
-// 分團：主團必選三選一；副職可不選，選則三選一
-export const MAIN_TEAMS = ["進攻", "機動", "防守"] as const;
-export const SUB_ROLES = ["保鑣", "扛拆", "空拆"] as const;
-export type MainTeam = (typeof MAIN_TEAMS)[number];
-export type SubRole = (typeof SUB_ROLES)[number];
+// 分團：主團與副職皆由使用者自訂（每人各自的清單；預設主團進攻/機動/防守、預設副職保鑣/扛拆/空拆）
+// 主團必選、單選；副職可不選、選則單選
+export type MainTeam = string;
+export type SubRole = string;
+export const UNASSIGNED_LABEL = "未分團"; // 保留字，不可作為主團名稱
+
+export interface UserTeam {
+  id: number;
+  name: string;
+}
+
+export interface UserSubRole {
+  id: number;
+  name: string;
+}
+
+// 顯示用：名稱未以「團/隊/組」結尾時補「團」（進攻 → 進攻團、第一團 → 第一團）
+export function teamLabel(name: string): string {
+  return /[團隊组組]$/.test(name) ? name : `${name}團`;
+}
 
 export interface TeamAssignment {
   mainTeam: MainTeam;

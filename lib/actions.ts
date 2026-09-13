@@ -4,11 +4,12 @@ import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import db from "./db";
+import db, { seedDefaultSubRoles, seedDefaultTeams } from "./db";
 import { createSession, destroySession, getCurrentUser } from "./auth";
 import { decodeCsv, parseGuildWarCsv } from "./parse";
-import { MAIN_TEAMS, SUB_ROLES } from "./types";
-import type { MainTeam, SubRole } from "./types";
+import { getUserSubRoles, getUserTeams } from "./data";
+import { UNASSIGNED_LABEL } from "./types";
+import type { UserSubRole, UserTeam } from "./types";
 
 export interface ActionState {
   error?: string;
@@ -32,7 +33,10 @@ export async function registerAction(
   const info = db
     .prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)")
     .run(username, hash);
-  await createSession(Number(info.lastInsertRowid));
+  const userId = Number(info.lastInsertRowid);
+  seedDefaultTeams(userId);
+  seedDefaultSubRoles(userId);
+  await createSession(userId);
   redirect("/dashboard");
 }
 
@@ -157,7 +161,26 @@ export async function disableShareAction(formData: FormData): Promise<void> {
   revalidatePath(`/match/${id}`);
 }
 
-// 設定分團：主團必選（進攻/機動/防守三選一）、副職可為空（保鑣/扛拆/空拆三選一）
+// 驗證主團/副職；兩者都必須是該使用者自訂清單中的名稱（副職可為 null）
+function validateTeamChoice(
+  userId: number,
+  mainTeam: string,
+  subRole: string | null
+): string | null {
+  const names = getUserTeams(userId).map((t) => t.name);
+  if (!names.includes(mainTeam)) {
+    return "主團必須是陣容配置中已建立的分團";
+  }
+  if (subRole !== null) {
+    const subNames = getUserSubRoles(userId).map((s) => s.name);
+    if (!subNames.includes(subRole)) {
+      return "副職必須是陣容配置中已建立的副職";
+    }
+  }
+  return null;
+}
+
+// 設定分團：主團必選（使用者自訂清單中擇一）、副職可為空（使用者自訂清單中擇一）
 export async function setTeamAssignmentAction(
   playerName: string,
   mainTeam: string,
@@ -167,12 +190,8 @@ export async function setTeamAssignmentAction(
   if (!user) redirect("/login");
   const name = playerName.trim();
   if (!name) return { error: "玩家名字不可為空" };
-  if (!MAIN_TEAMS.includes(mainTeam as MainTeam)) {
-    return { error: "主團必須為進攻、機動或防守其中之一" };
-  }
-  if (subRole !== null && !SUB_ROLES.includes(subRole as SubRole)) {
-    return { error: "副職必須為保鑣、扛拆或空拆其中之一" };
-  }
+  const err = validateTeamChoice(user.id, mainTeam, subRole);
+  if (err) return { error: err };
   db.prepare(
     `INSERT INTO team_assignments (user_id, player_name, main_team, sub_role)
      VALUES (?, ?, ?, ?)
@@ -206,12 +225,8 @@ export async function setMatchTeamAssignmentAction(
   requireOwnedMatch(user.id, matchId);
   const name = playerName.trim();
   if (!name) return { error: "玩家名字不可為空" };
-  if (!MAIN_TEAMS.includes(mainTeam as MainTeam)) {
-    return { error: "主團必須為進攻、機動或防守其中之一" };
-  }
-  if (subRole !== null && !SUB_ROLES.includes(subRole as SubRole)) {
-    return { error: "副職必須為保鑣、扛拆或空拆其中之一" };
-  }
+  const err = validateTeamChoice(user.id, mainTeam, subRole);
+  if (err) return { error: err };
   db.prepare(
     `INSERT INTO match_team_assignments (match_id, player_name, main_team, sub_role)
      VALUES (?, ?, ?, ?)
@@ -234,4 +249,186 @@ export async function clearMatchTeamAssignmentAction(
     "DELETE FROM match_team_assignments WHERE match_id = ? AND player_name = ?"
   ).run(matchId, playerName.trim());
   revalidatePath(`/match/${matchId}`);
+}
+
+// ===== 主團管理（使用者自訂清單）=====
+
+export interface TeamListResult {
+  error?: string;
+  teams?: UserTeam[];
+}
+
+function validateTeamName(name: string, userId: number, excludeId?: number): string | null {
+  if (!name) return "分團名稱不可為空";
+  if (name.length > 12) return "分團名稱最多 12 個字";
+  if (name === UNASSIGNED_LABEL) return `「${UNASSIGNED_LABEL}」為保留名稱`;
+  const dup = db
+    .prepare("SELECT id FROM user_teams WHERE user_id = ? AND name = ?")
+    .get(userId, name) as { id: number } | undefined;
+  if (dup && dup.id !== excludeId) return "已有同名分團";
+  return null;
+}
+
+export async function addTeamAction(rawName: string): Promise<TeamListResult> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  const name = rawName.trim();
+  const err = validateTeamName(name, user.id);
+  if (err) return { error: err };
+  const count = (
+    db.prepare("SELECT COUNT(*) AS c FROM user_teams WHERE user_id = ?").get(user.id) as {
+      c: number;
+    }
+  ).c;
+  if (count >= 20) return { error: "分團數量上限為 20 個" };
+  db.prepare(
+    `INSERT INTO user_teams (user_id, name, sort_order)
+     VALUES (?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM user_teams WHERE user_id = ?))`
+  ).run(user.id, name, user.id);
+  revalidatePath("/teams");
+  return { teams: getUserTeams(user.id) };
+}
+
+export async function renameTeamAction(
+  teamId: number,
+  rawName: string
+): Promise<TeamListResult> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  const row = db
+    .prepare("SELECT name FROM user_teams WHERE id = ? AND user_id = ?")
+    .get(teamId, user.id) as { name: string } | undefined;
+  if (!row) return { error: "找不到分團" };
+  const name = rawName.trim();
+  if (name === row.name) return { teams: getUserTeams(user.id) };
+  const err = validateTeamName(name, user.id, teamId);
+  if (err) return { error: err };
+  // 同步更新統一配置與所有本場調整中的主團名稱
+  db.transaction(() => {
+    db.prepare("UPDATE user_teams SET name = ? WHERE id = ?").run(name, teamId);
+    db.prepare(
+      "UPDATE team_assignments SET main_team = ? WHERE user_id = ? AND main_team = ?"
+    ).run(name, user.id, row.name);
+    db.prepare(
+      `UPDATE match_team_assignments SET main_team = ?
+       WHERE main_team = ? AND match_id IN (SELECT id FROM matches WHERE user_id = ?)`
+    ).run(name, row.name, user.id);
+  })();
+  revalidatePath("/teams");
+  return { teams: getUserTeams(user.id) };
+}
+
+// 刪除分團會一併清除該團的統一配置與本場調整
+export async function deleteTeamAction(teamId: number): Promise<TeamListResult> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  const row = db
+    .prepare("SELECT name FROM user_teams WHERE id = ? AND user_id = ?")
+    .get(teamId, user.id) as { name: string } | undefined;
+  if (!row) return { error: "找不到分團" };
+  db.transaction(() => {
+    db.prepare("DELETE FROM user_teams WHERE id = ?").run(teamId);
+    db.prepare("DELETE FROM team_assignments WHERE user_id = ? AND main_team = ?").run(
+      user.id,
+      row.name
+    );
+    db.prepare(
+      `DELETE FROM match_team_assignments
+       WHERE main_team = ? AND match_id IN (SELECT id FROM matches WHERE user_id = ?)`
+    ).run(row.name, user.id);
+  })();
+  revalidatePath("/teams");
+  return { teams: getUserTeams(user.id) };
+}
+
+// ===== 副職管理（使用者自訂清單；與主團管理對稱）=====
+
+export interface SubRoleListResult {
+  error?: string;
+  subRoles?: UserSubRole[];
+}
+
+function validateSubRoleName(
+  name: string,
+  userId: number,
+  excludeId?: number
+): string | null {
+  if (!name) return "副職名稱不可為空";
+  if (name.length > 12) return "副職名稱最多 12 個字";
+  const dup = db
+    .prepare("SELECT id FROM user_sub_roles WHERE user_id = ? AND name = ?")
+    .get(userId, name) as { id: number } | undefined;
+  if (dup && dup.id !== excludeId) return "已有同名副職";
+  return null;
+}
+
+export async function addSubRoleAction(rawName: string): Promise<SubRoleListResult> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  const name = rawName.trim();
+  const err = validateSubRoleName(name, user.id);
+  if (err) return { error: err };
+  const count = (
+    db.prepare("SELECT COUNT(*) AS c FROM user_sub_roles WHERE user_id = ?").get(user.id) as {
+      c: number;
+    }
+  ).c;
+  if (count >= 20) return { error: "副職數量上限為 20 個" };
+  db.prepare(
+    `INSERT INTO user_sub_roles (user_id, name, sort_order)
+     VALUES (?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM user_sub_roles WHERE user_id = ?))`
+  ).run(user.id, name, user.id);
+  revalidatePath("/teams");
+  return { subRoles: getUserSubRoles(user.id) };
+}
+
+export async function renameSubRoleAction(
+  subRoleId: number,
+  rawName: string
+): Promise<SubRoleListResult> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  const row = db
+    .prepare("SELECT name FROM user_sub_roles WHERE id = ? AND user_id = ?")
+    .get(subRoleId, user.id) as { name: string } | undefined;
+  if (!row) return { error: "找不到副職" };
+  const name = rawName.trim();
+  if (name === row.name) return { subRoles: getUserSubRoles(user.id) };
+  const err = validateSubRoleName(name, user.id, subRoleId);
+  if (err) return { error: err };
+  // 同步更新統一配置與所有本場調整中的副職名稱
+  db.transaction(() => {
+    db.prepare("UPDATE user_sub_roles SET name = ? WHERE id = ?").run(name, subRoleId);
+    db.prepare(
+      "UPDATE team_assignments SET sub_role = ? WHERE user_id = ? AND sub_role = ?"
+    ).run(name, user.id, row.name);
+    db.prepare(
+      `UPDATE match_team_assignments SET sub_role = ?
+       WHERE sub_role = ? AND match_id IN (SELECT id FROM matches WHERE user_id = ?)`
+    ).run(name, row.name, user.id);
+  })();
+  revalidatePath("/teams");
+  return { subRoles: getUserSubRoles(user.id) };
+}
+
+// 刪除副職：副職為選填，只把引用它的設定改回「無副職」，不移除玩家的主團
+export async function deleteSubRoleAction(subRoleId: number): Promise<SubRoleListResult> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  const row = db
+    .prepare("SELECT name FROM user_sub_roles WHERE id = ? AND user_id = ?")
+    .get(subRoleId, user.id) as { name: string } | undefined;
+  if (!row) return { error: "找不到副職" };
+  db.transaction(() => {
+    db.prepare("DELETE FROM user_sub_roles WHERE id = ?").run(subRoleId);
+    db.prepare(
+      "UPDATE team_assignments SET sub_role = NULL WHERE user_id = ? AND sub_role = ?"
+    ).run(user.id, row.name);
+    db.prepare(
+      `UPDATE match_team_assignments SET sub_role = NULL
+       WHERE sub_role = ? AND match_id IN (SELECT id FROM matches WHERE user_id = ?)`
+    ).run(row.name, user.id);
+  })();
+  revalidatePath("/teams");
+  return { subRoles: getUserSubRoles(user.id) };
 }
