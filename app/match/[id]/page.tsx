@@ -14,7 +14,7 @@ export default async function MatchPage(props: PageProps<"/match/[id]">) {
   const { id } = await props.params;
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const match = await getMatchForUser(Number(id), user.id);
+  const match = await getMatchForUser(id, user.id);
   if (!match) notFound();
   const [teams, matchTeams, userTeams, userSubRoles] = await Promise.all([
     getTeamAssignments(user.id),

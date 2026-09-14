@@ -112,8 +112,10 @@ let firstMatchId = null;
 for (const file of files) {
   const text = fs.readFileSync(path.join(csvDir, file), "utf8").replace(/^﻿/, "");
   const [ally, enemy] = parseCsv(text);
+  const publicId = crypto.randomBytes(16).toString("base64url");
   const matchId = await insertId(
     db.insertInto("matches").values({
+      public_id: publicId,
       user_id: userId,
       title: `${ally.guildName} vs ${enemy.guildName}`,
       ally_name: ally.guildName,
@@ -122,7 +124,7 @@ for (const file of files) {
       enemy_count: enemy.memberCount,
     })
   );
-  firstMatchId ??= matchId;
+  firstMatchId ??= publicId;
   const rows = [ally, enemy].flatMap((section, side) =>
     section.players.map((f) => {
       const row = { match_id: matchId, side, name: f[0], cls: f[1] };
@@ -136,11 +138,11 @@ for (const file of files) {
   console.log(`imported match ${matchId}: ${ally.guildName} (${ally.players.length}) vs ${enemy.guildName} (${enemy.players.length})`);
 }
 
-const shareToken = crypto.randomBytes(9).toString("base64url");
+const shareToken = crypto.randomBytes(16).toString("base64url");
 await db
   .updateTable("matches")
   .set({ share_token: shareToken })
-  .where("id", "=", firstMatchId)
+  .where("public_id", "=", firstMatchId)
   .execute();
 
 console.log(JSON.stringify({ sessionToken, shareToken, firstMatchId }));

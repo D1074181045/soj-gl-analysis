@@ -1,8 +1,14 @@
 import { Kysely, sql } from "kysely";
 import type { ColumnDefinitionBuilder, Generated } from "kysely";
 import { MysqlDialect, PostgresDialect, SqliteDialect } from "kysely";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+
+// 對外 id：128 bit 隨機、URL 安全、無規律（22 字元）
+export function newPublicId(): string {
+  return crypto.randomBytes(16).toString("base64url");
+}
 
 // ===== 資料表型別（Kysely）=====
 export interface UsersTable {
@@ -17,7 +23,8 @@ export interface SessionsTable {
   expires_at: number; // epoch ms
 }
 export interface MatchesTable {
-  id: Generated<number>;
+  id: Generated<number>; // 內部關聯用，不對外暴露
+  public_id: string; // 對外的隨機 id（網址／表單／action 一律用這個）
   user_id: number;
   title: string;
   ally_name: string;
@@ -164,7 +171,8 @@ const timestampType = () =>
 async function createIndexIfMissing(
   name: string,
   table: keyof Database,
-  column: string
+  column: string,
+  unique = false
 ): Promise<void> {
   if (DIALECT === "mysql") {
     const rows = await sql<{ c: number | string }>`
@@ -172,10 +180,40 @@ async function createIndexIfMissing(
       WHERE table_schema = DATABASE() AND table_name = ${table} AND index_name = ${name}
     `.execute(db);
     if (Number(rows.rows[0]?.c ?? 0) > 0) return;
-    await db.schema.createIndex(name).on(table).column(column).execute();
+    const q = db.schema.createIndex(name).on(table).column(column);
+    await (unique ? q.unique() : q).execute();
     return;
   }
-  await db.schema.createIndex(name).ifNotExists().on(table).column(column).execute();
+  const q = db.schema.createIndex(name).ifNotExists().on(table).column(column);
+  await (unique ? q.unique() : q).execute();
+}
+
+// 遷移：舊資料庫的 matches 沒有 public_id 欄位時補上並回填隨機 id
+async function ensureMatchPublicId(): Promise<void> {
+  let hasColumn = true;
+  try {
+    await db.selectFrom("matches").select("public_id").limit(1).execute();
+  } catch {
+    hasColumn = false;
+  }
+  if (!hasColumn) {
+    await db.schema.alterTable("matches").addColumn("public_id", keyText()).execute();
+  }
+  const missing = await db
+    .selectFrom("matches")
+    .select("id")
+    .where("public_id", "is", null)
+    .execute();
+  for (const r of missing) {
+    await db
+      .updateTable("matches")
+      .set({ public_id: newPublicId() })
+      .where("id", "=", r.id)
+      .execute();
+  }
+  if (!hasColumn) {
+    await createIndexIfMissing("uq_matches_public_id", "matches", "public_id", true);
+  }
 }
 
 async function ensureSchema(): Promise<void> {
@@ -202,6 +240,7 @@ async function ensureSchema(): Promise<void> {
     .createTable("matches")
     .ifNotExists()
     .addColumn("id", pkType(), pkCol)
+    .addColumn("public_id", keyText(), (c) => c.notNull().unique())
     .addColumn("user_id", "integer", (c) =>
       c.notNull().references("users.id").onDelete("cascade")
     )
@@ -239,6 +278,7 @@ async function ensureSchema(): Promise<void> {
   await createIndexIfMissing("idx_players_match", "players", "match_id");
   await createIndexIfMissing("idx_players_name", "players", "name");
   await createIndexIfMissing("idx_matches_user", "matches", "user_id");
+  await ensureMatchPublicId();
 
   await db.schema
     .createTable("team_assignments")

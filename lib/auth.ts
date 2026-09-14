@@ -28,10 +28,10 @@ export async function createSession(userId: number): Promise<void> {
 }
 
 export async function getCurrentUser(): Promise<SessionUser | null> {
+  await ready(); // 每個頁面都會經過這裡：確保 schema 已建立/遷移
   const store = await cookies();
   const token = store.get(SESSION_COOKIE)?.value;
   if (!token) return null;
-  await ready();
   const row = await db
     .selectFrom("sessions as s")
     .innerJoin("users as u", "u.id", "s.user_id")

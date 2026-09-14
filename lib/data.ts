@@ -28,6 +28,7 @@ interface PlayerRow {
 
 interface MatchRow {
   id: number;
+  public_id: string;
   title: string;
   ally_name: string;
   ally_count: number;
@@ -60,7 +61,7 @@ function toPlayer(r: PlayerRow): PlayerStats {
 
 function toSummary(r: MatchRow): MatchSummary {
   return {
-    id: r.id,
+    id: r.public_id, // 只對外暴露隨機 id
     title: r.title,
     allyName: r.ally_name,
     allyCount: r.ally_count,
@@ -98,14 +99,14 @@ async function attachPlayers(match: MatchRow): Promise<MatchDetail> {
 }
 
 export async function getMatchForUser(
-  matchId: number,
+  publicId: string,
   userId: number
 ): Promise<MatchDetail | null> {
   await ready();
   const row = await db
     .selectFrom("matches")
     .selectAll()
-    .where("id", "=", matchId)
+    .where("public_id", "=", publicId)
     .where("user_id", "=", userId)
     .executeTakeFirst();
   return row ? attachPlayers(row) : null;
@@ -122,7 +123,7 @@ export async function getMatchByShareToken(token: string): Promise<MatchDetail |
 }
 
 export interface PlayerHistoryEntry {
-  matchId: number;
+  matchId: string; // public id
   matchTitle: string;
   createdAt: string;
   side: number;
@@ -138,14 +139,20 @@ export async function getPlayerHistoryIndex(userId: number): Promise<PlayerHisto
     .selectFrom("players as p")
     .innerJoin("matches as m", "m.id", "p.match_id")
     .selectAll("p")
-    .select(["m.id as match_id", "m.title", "m.created_at", "m.ally_name", "m.enemy_name"])
+    .select([
+      "m.public_id as match_public_id",
+      "m.title",
+      "m.created_at",
+      "m.ally_name",
+      "m.enemy_name",
+    ])
     .where("m.user_id", "=", userId)
     .orderBy("m.created_at", "asc")
     .orderBy("m.id", "asc")
     .orderBy("p.id", "asc")
     .execute();
   return rows.map((r) => ({
-    matchId: r.match_id,
+    matchId: r.match_public_id,
     matchTitle: r.title,
     createdAt: toIso(r.created_at),
     side: r.side,
@@ -193,29 +200,34 @@ export async function getTeamAssignments(userId: number): Promise<TeamMap> {
   return map;
 }
 
-async function ownerOfMatch(matchId: number): Promise<number | null> {
+// 由 public id 反查場次的內部 id 與擁有者（找不到回 null）
+async function resolveMatch(
+  publicId: string
+): Promise<{ id: number; userId: number } | null> {
   const row = await db
     .selectFrom("matches")
-    .select("user_id")
-    .where("id", "=", matchId)
+    .select(["id", "user_id"])
+    .where("public_id", "=", publicId)
     .executeTakeFirst();
-  return row ? row.user_id : null;
+  return row ? { id: row.id, userId: row.user_id } : null;
 }
 
-// 分享頁用：由場次反查擁有��的分團設定
-export async function getTeamAssignmentsByMatch(matchId: number): Promise<TeamMap> {
+// 分享頁用：由場次反查擁有者的分團設定
+export async function getTeamAssignmentsByMatch(publicId: string): Promise<TeamMap> {
   await ready();
-  const uid = await ownerOfMatch(matchId);
-  return uid === null ? {} : getTeamAssignments(uid);
+  const m = await resolveMatch(publicId);
+  return m ? getTeamAssignments(m.userId) : {};
 }
 
 // 單場分團調整（優先級高於統一陣容配置）
-export async function getMatchTeamOverrides(matchId: number): Promise<TeamMap> {
+export async function getMatchTeamOverrides(publicId: string): Promise<TeamMap> {
   await ready();
+  const m = await resolveMatch(publicId);
+  if (!m) return {};
   const rows = await db
     .selectFrom("match_team_assignments")
     .select(["player_name", "main_team", "sub_role"])
-    .where("match_id", "=", matchId)
+    .where("match_id", "=", m.id)
     .execute();
   const map: TeamMap = {};
   for (const r of rows) {
@@ -237,10 +249,10 @@ export async function getUserTeams(userId: number): Promise<UserTeam[]> {
 }
 
 // 分享頁用：由場次反查擁有者的主團清單
-export async function getUserTeamsByMatch(matchId: number): Promise<UserTeam[]> {
+export async function getUserTeamsByMatch(publicId: string): Promise<UserTeam[]> {
   await ready();
-  const uid = await ownerOfMatch(matchId);
-  return uid === null ? [] : getUserTeams(uid);
+  const m = await resolveMatch(publicId);
+  return m ? getUserTeams(m.userId) : [];
 }
 
 // 使用者自訂的副職清單（依排序）
@@ -256,8 +268,8 @@ export async function getUserSubRoles(userId: number): Promise<UserSubRole[]> {
 }
 
 // 分享頁用：由場次反查擁有者的副職清單
-export async function getUserSubRolesByMatch(matchId: number): Promise<UserSubRole[]> {
+export async function getUserSubRolesByMatch(publicId: string): Promise<UserSubRole[]> {
   await ready();
-  const uid = await ownerOfMatch(matchId);
-  return uid === null ? [] : getUserSubRoles(uid);
+  const m = await resolveMatch(publicId);
+  return m ? getUserSubRoles(m.userId) : [];
 }

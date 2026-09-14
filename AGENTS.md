@@ -52,6 +52,8 @@ Next.js 16（App Router、Turbopack）+ TypeScript + Tailwind 4 + Kysely（SQLit
 
 `/dashboard`（上傳＋場次列表＋分享控制）、`/match/[id]`（限擁有者）、`/share/[token]`（公開唯讀，同一個 `MatchView` 加 `shareBanner`）、`/players`（跨場比較）、`/teams`（陣容配置：管理主團／副職清單＋把我方玩家分到各團）。未登入訪問受保護頁一律 `redirect("/login")`。
 
+**場次 id 分兩層**：資料庫 `matches.id` 是自增整數，只供 `players`／`match_team_assignments` 關聯；對外（網址、`MatchSummary.id`、表單 hidden input、所有 server action 參數）一律用 `matches.public_id`（`newPublicId()`＝16 bytes base64url，22 字元、唯一索引）。`data.ts` 的讀取函式以 public id 為參數並在 `toSummary` 只回 public id；`actions.ts` 的 `requireOwnedMatch(userId, publicId)` 驗證擁有權後回傳內部 id 給後續查詢。**任何新程式都不得把內部 id 送到 client。**舊資料庫由 `ensureMatchPublicId()` 自動加欄位、回填、建唯一索引（三方言皆已驗證）。分享 token 同為 16 bytes。
+
 ### UI 層
 
 - **`components/MatchView.tsx`**：單場戰報主元件，四分頁（總覽／職業統計／玩家數據／分團分析）。分團分析只列出本場有成員的分團（依使用者清單順序，未分團附在最後），卡片可點選展開該團成員表（一次一團），含「調整本場分團」編輯模式（僅擁有者，優先級：本場調整 > 統一配置）。兩種 modal 可互相導覽：`ClassDetailModal`（職業詳情，含成員清單）→ 點成員開 `PlayerDetailModal`，關閉後回到職業詳情（靠 `selectedCls && !selectedPlayer` 條件渲染實現）。

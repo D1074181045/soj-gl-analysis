@@ -26,7 +26,7 @@ export interface ParsedMatch {
 }
 
 export interface MatchSummary {
-  id: number;
+  id: string; // 對外的隨機 public id（非資料庫自增 id）
   title: string;
   allyName: string;
   allyCount: number;

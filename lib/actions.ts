@@ -8,6 +8,7 @@ import type { ExpressionBuilder } from "kysely";
 import db, {
   DIALECT,
   insertReturningId,
+  newPublicId,
   ready,
   seedDefaultSubRoles,
   seedDefaultTeams,
@@ -102,9 +103,11 @@ export async function uploadMatchAction(
     customTitle || `${parsed.ally.guildName} vs ${parsed.enemy.guildName}`;
 
   await ready();
-  const matchId = await db.transaction().execute(async (trx) => {
+  const publicId = newPublicId();
+  await db.transaction().execute(async (trx) => {
     // 取得自增 id：Postgres 用 RETURNING，其餘用 insertId
     const insert = trx.insertInto("matches").values({
+      public_id: publicId,
       user_id: user.id,
       title,
       ally_name: parsed.ally.guildName,
@@ -143,28 +146,29 @@ export async function uploadMatchAction(
     for (let i = 0; i < rows.length; i += 50) {
       await trx.insertInto("players").values(rows.slice(i, i + 50)).execute();
     }
-    return id;
   });
 
   revalidatePath("/dashboard");
-  redirect(`/match/${matchId}`);
+  redirect(`/match/${publicId}`);
 }
 
-async function requireOwnedMatch(userId: number, matchId: number): Promise<void> {
+// 以 public id 驗證擁有權，回傳內部 id（供關聯查詢）
+async function requireOwnedMatch(userId: number, publicId: string): Promise<number> {
   const row = await db
     .selectFrom("matches")
     .select("id")
-    .where("id", "=", matchId)
+    .where("public_id", "=", publicId)
     .where("user_id", "=", userId)
     .executeTakeFirst();
   if (!row) throw new Error("找不到場次或無權限");
+  return row.id;
 }
 
 export async function deleteMatchAction(formData: FormData): Promise<void> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const id = Number(formData.get("id"));
-  await requireOwnedMatch(user.id, id);
+  const publicId = String(formData.get("id") ?? "");
+  const id = await requireOwnedMatch(user.id, publicId);
   await db.deleteFrom("matches").where("id", "=", id).execute();
   revalidatePath("/dashboard");
 }
@@ -172,22 +176,22 @@ export async function deleteMatchAction(formData: FormData): Promise<void> {
 export async function enableShareAction(formData: FormData): Promise<void> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const id = Number(formData.get("id"));
-  await requireOwnedMatch(user.id, id);
-  const token = crypto.randomBytes(9).toString("base64url");
+  const publicId = String(formData.get("id") ?? "");
+  const id = await requireOwnedMatch(user.id, publicId);
+  const token = crypto.randomBytes(16).toString("base64url");
   await db.updateTable("matches").set({ share_token: token }).where("id", "=", id).execute();
   revalidatePath("/dashboard");
-  revalidatePath(`/match/${id}`);
+  revalidatePath(`/match/${publicId}`);
 }
 
 export async function disableShareAction(formData: FormData): Promise<void> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const id = Number(formData.get("id"));
-  await requireOwnedMatch(user.id, id);
+  const publicId = String(formData.get("id") ?? "");
+  const id = await requireOwnedMatch(user.id, publicId);
   await db.updateTable("matches").set({ share_token: null }).where("id", "=", id).execute();
   revalidatePath("/dashboard");
-  revalidatePath(`/match/${id}`);
+  revalidatePath(`/match/${publicId}`);
 }
 
 // 驗證主團/副職；兩者都必須是該使用者自訂清單中的名稱（副職可為 null）
@@ -274,37 +278,37 @@ export async function clearTeamAssignmentAction(playerName: string): Promise<voi
 
 // 單場分團調整（覆蓋統一陣容配置；規則與統一配置相同）
 export async function setMatchTeamAssignmentAction(
-  matchId: number,
+  matchPublicId: string,
   playerName: string,
   mainTeam: string,
   subRole: string | null
 ): Promise<{ error?: string }> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  await requireOwnedMatch(user.id, matchId);
+  const matchId = await requireOwnedMatch(user.id, matchPublicId);
   const name = playerName.trim();
   if (!name) return { error: "玩家名字不可為空" };
   const err = await validateTeamChoice(user.id, mainTeam, subRole);
   if (err) return { error: err };
   await upsertMatchTeamAssignment(matchId, name, mainTeam, subRole);
-  revalidatePath(`/match/${matchId}`);
+  revalidatePath(`/match/${matchPublicId}`);
   return {};
 }
 
 // 還原單場調整（回到統一陣容配置）
 export async function clearMatchTeamAssignmentAction(
-  matchId: number,
+  matchPublicId: string,
   playerName: string
 ): Promise<void> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  await requireOwnedMatch(user.id, matchId);
+  const matchId = await requireOwnedMatch(user.id, matchPublicId);
   await db
     .deleteFrom("match_team_assignments")
     .where("match_id", "=", matchId)
     .where("player_name", "=", playerName.trim())
     .execute();
-  revalidatePath(`/match/${matchId}`);
+  revalidatePath(`/match/${matchPublicId}`);
 }
 
 // ===== 主團管理（使用者自訂清單）=====
