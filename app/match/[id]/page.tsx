@@ -14,12 +14,16 @@ export default async function MatchPage(props: PageProps<"/match/[id]">) {
   const { id } = await props.params;
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const match = getMatchForUser(Number(id), user.id);
+  const match = await getMatchForUser(Number(id), user.id);
   if (!match) notFound();
-  const teams = getTeamAssignments(user.id);
-  const matchTeams = getMatchTeamOverrides(match.id);
-  const teamNames = getUserTeams(user.id).map((t) => t.name);
-  const subRoleNames = getUserSubRoles(user.id).map((s) => s.name);
+  const [teams, matchTeams, userTeams, userSubRoles] = await Promise.all([
+    getTeamAssignments(user.id),
+    getMatchTeamOverrides(match.id),
+    getUserTeams(user.id),
+    getUserSubRoles(user.id),
+  ]);
+  const teamNames = userTeams.map((t) => t.name);
+  const subRoleNames = userSubRoles.map((s) => s.name);
 
   return (
     <div className="flex flex-col gap-4">

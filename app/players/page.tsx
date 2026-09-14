@@ -6,6 +6,6 @@ import { getPlayerHistoryIndex } from "@/lib/data";
 export default async function PlayersPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const entries = getPlayerHistoryIndex(user.id);
+  const entries = await getPlayerHistoryIndex(user.id);
   return <PlayerCompare entries={entries} />;
 }

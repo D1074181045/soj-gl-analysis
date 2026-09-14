@@ -19,7 +19,7 @@
 
 ## 技術棧
 
-Next.js 16（App Router、Server Actions）・TypeScript・Tailwind CSS 4・better-sqlite3・Recharts
+Next.js 16（App Router、Server Actions）・TypeScript・Tailwind CSS 4・Kysely（SQLite／MySQL／PostgreSQL）・Recharts
 
 ## 快速開始
 
@@ -37,7 +37,24 @@ npm run build      # 建置（含 TypeScript 型別檢查）
 npm start          # http://localhost:3000
 ```
 
-資料庫為 SQLite 單一檔案，首次啟動自動建立於 `data/app.db`（已 gitignore），無需任何設定。
+預設使用 SQLite 單一檔案，首次啟動自動建立於 `data/app.db`（已 gitignore），無需任何設定。
+
+### 切換資料庫（SQLite／MySQL／PostgreSQL）
+
+同一份程式碼透過環境變數切換資料庫，資料表會在首次啟動時自動建立（可參考 `.env.example`）：
+
+| 資料庫 | `DB_DIALECT` | `DATABASE_URL` |
+|---|---|---|
+| SQLite（預設） | `sqlite` | 可省略；或指定檔案路徑如 `./data/app.db` |
+| MySQL 8 / MariaDB | `mysql` | `mysql://user:password@host:3306/dbname` |
+| PostgreSQL | `postgres` | `postgres://user:password@host:5432/dbname` |
+
+```bash
+DB_DIALECT=postgres DATABASE_URL=postgres://app:app@localhost:5432/app npm start
+```
+
+- MySQL 請以 `utf8mb4` 建立資料庫（中文玩家名稱、表情符號才不會亂碼）
+- 三種資料庫的 schema 完全相同，但**不會自動搬移既有資料**；換資料庫等於從空資料庫開始
 
 ### Docker
 
@@ -45,8 +62,9 @@ npm start          # http://localhost:3000
 docker compose up -d --build
 ```
 
-- 服務跑在 `http://localhost:3000`
-- 資料庫持久化於 named volume `app-data`；想直接對應主機目錄，將 `docker-compose.yml` 的 volume 改為 `./data:/app/data`
+- 服務跑在 `http://localhost:3001`
+- 預設 SQLite，資料庫持久化於 named volume `app-data`；想直接對應主機目錄，將 `docker-compose.yml` 的 volume 改為 `./data:/app/data`
+- 要改用 MySQL／PostgreSQL：在 `.env` 設定 `DB_DIALECT` 與 `DATABASE_URL`，並解開 `docker-compose.yml` 內對應的 `db` 服務範例註解
 - 映像為多階段建置（standalone 輸出），以非 root 使用者執行，內建 healthcheck
 
 ## 結算 CSV 格式
@@ -71,7 +89,7 @@ docker compose up -d --build
 
 ```bash
 node scripts/seed-test.mjs
-# 建立 testuser/test123456、匯入 repo 根目錄的範例 CSV、開啟一場分享
+# 建立 testuser/test123456、匯入 repo 根目錄的範例 CSV、開啟一場分享（依 DB_DIALECT/DATABASE_URL 連線）
 # 輸出 {sessionToken, shareToken, firstMatchId}
 
 node scripts/ui-test.mjs <shareToken>
@@ -86,10 +104,10 @@ node scripts/ui-test.mjs <shareToken>
 ```
 app/            路由（dashboard、match/[id]、share/[token]、players、login、register）
 components/     UI 元件（MatchView 戰報主元件、兩種詳情 modal、共用視覺化元件）
-lib/            db（SQLite 單例）、parse（CSV 解析）、actions（Server Actions）、
+lib/            db（Kysely 連線＋跨方言 schema）、parse（CSV 解析）、actions（Server Actions）、
                 auth（session）、data（查詢）、types、format
 scripts/        seed-test / ui-test 驗證腳本
-data/           SQLite 資料庫（自動建立，gitignored）
+data/           SQLite 資料庫（預設方言時自動建立，gitignored）
 ```
 
 更完整的架構說明見 repo 根目錄的 `CLAUDE.md`。

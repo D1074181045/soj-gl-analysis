@@ -7,7 +7,7 @@ import MatchCard from "@/components/MatchCard";
 export default async function DashboardPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const matches = getUserMatches(user.id);
+  const matches = await getUserMatches(user.id);
 
   return (
     <div className="flex flex-col gap-6">

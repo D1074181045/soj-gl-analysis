@@ -1,11 +1,9 @@
-import db from "./db";
+import db, { ready, toIso } from "./db";
 import type {
   MatchDetail,
   MatchSummary,
-  MainTeam,
   PlayerStats,
   RosterEntry,
-  SubRole,
   TeamMap,
   UserSubRole,
   UserTeam,
@@ -19,10 +17,10 @@ interface PlayerRow {
   kills: number;
   assists: number;
   resources: number;
-  player_damage: number;
-  building_damage: number;
-  healing: number;
-  damage_taken: number;
+  player_damage: number | string;
+  building_damage: number | string;
+  healing: number | string;
+  damage_taken: number | string;
   deaths: number;
   purify: number;
   burn: number;
@@ -36,8 +34,11 @@ interface MatchRow {
   enemy_name: string;
   enemy_count: number;
   share_token: string | null;
-  created_at: string;
+  created_at: Date | string;
 }
+
+// bigint 欄位在 pg/mysql 可能回傳字串，統一轉數字
+const n = (v: number | string) => Number(v);
 
 function toPlayer(r: PlayerRow): PlayerStats {
   return {
@@ -47,10 +48,10 @@ function toPlayer(r: PlayerRow): PlayerStats {
     kills: r.kills,
     assists: r.assists,
     resources: r.resources,
-    playerDamage: r.player_damage,
-    buildingDamage: r.building_damage,
-    healing: r.healing,
-    damageTaken: r.damage_taken,
+    playerDamage: n(r.player_damage),
+    buildingDamage: n(r.building_damage),
+    healing: n(r.healing),
+    damageTaken: n(r.damage_taken),
     deaths: r.deaths,
     purify: r.purify,
     burn: r.burn,
@@ -66,21 +67,29 @@ function toSummary(r: MatchRow): MatchSummary {
     enemyName: r.enemy_name,
     enemyCount: r.enemy_count,
     shareToken: r.share_token,
-    createdAt: r.created_at,
+    createdAt: toIso(r.created_at),
   };
 }
 
-export function getUserMatches(userId: number): MatchSummary[] {
-  const rows = db
-    .prepare("SELECT * FROM matches WHERE user_id = ? ORDER BY created_at DESC, id DESC")
-    .all(userId) as MatchRow[];
+export async function getUserMatches(userId: number): Promise<MatchSummary[]> {
+  await ready();
+  const rows = await db
+    .selectFrom("matches")
+    .selectAll()
+    .where("user_id", "=", userId)
+    .orderBy("created_at", "desc")
+    .orderBy("id", "desc")
+    .execute();
   return rows.map(toSummary);
 }
 
-function attachPlayers(match: MatchRow): MatchDetail {
-  const players = db
-    .prepare("SELECT * FROM players WHERE match_id = ? ORDER BY id")
-    .all(match.id) as PlayerRow[];
+async function attachPlayers(match: MatchRow): Promise<MatchDetail> {
+  const players = await db
+    .selectFrom("players")
+    .selectAll()
+    .where("match_id", "=", match.id)
+    .orderBy("id")
+    .execute();
   return {
     ...toSummary(match),
     ally: players.filter((p) => p.side === 0).map(toPlayer),
@@ -88,17 +97,27 @@ function attachPlayers(match: MatchRow): MatchDetail {
   };
 }
 
-export function getMatchForUser(matchId: number, userId: number): MatchDetail | null {
-  const row = db
-    .prepare("SELECT * FROM matches WHERE id = ? AND user_id = ?")
-    .get(matchId, userId) as MatchRow | undefined;
+export async function getMatchForUser(
+  matchId: number,
+  userId: number
+): Promise<MatchDetail | null> {
+  await ready();
+  const row = await db
+    .selectFrom("matches")
+    .selectAll()
+    .where("id", "=", matchId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst();
   return row ? attachPlayers(row) : null;
 }
 
-export function getMatchByShareToken(token: string): MatchDetail | null {
-  const row = db
-    .prepare("SELECT * FROM matches WHERE share_token = ?")
-    .get(token) as MatchRow | undefined;
+export async function getMatchByShareToken(token: string): Promise<MatchDetail | null> {
+  await ready();
+  const row = await db
+    .selectFrom("matches")
+    .selectAll()
+    .where("share_token", "=", token)
+    .executeTakeFirst();
   return row ? attachPlayers(row) : null;
 }
 
@@ -113,26 +132,22 @@ export interface PlayerHistoryEntry {
 }
 
 // 該使用者所有場次中出現過的玩家（供跨場比較選擇）
-export function getPlayerHistoryIndex(userId: number): PlayerHistoryEntry[] {
-  const rows = db
-    .prepare(
-      `SELECT p.*, m.id AS match_id, m.title, m.created_at,
-              m.ally_name, m.enemy_name
-       FROM players p JOIN matches m ON m.id = p.match_id
-       WHERE m.user_id = ?
-       ORDER BY m.created_at ASC, m.id ASC, p.id ASC`
-    )
-    .all(userId) as (PlayerRow & {
-    match_id: number;
-    title: string;
-    created_at: string;
-    ally_name: string;
-    enemy_name: string;
-  })[];
+export async function getPlayerHistoryIndex(userId: number): Promise<PlayerHistoryEntry[]> {
+  await ready();
+  const rows = await db
+    .selectFrom("players as p")
+    .innerJoin("matches as m", "m.id", "p.match_id")
+    .selectAll("p")
+    .select(["m.id as match_id", "m.title", "m.created_at", "m.ally_name", "m.enemy_name"])
+    .where("m.user_id", "=", userId)
+    .orderBy("m.created_at", "asc")
+    .orderBy("m.id", "asc")
+    .orderBy("p.id", "asc")
+    .execute();
   return rows.map((r) => ({
     matchId: r.match_id,
     matchTitle: r.title,
-    createdAt: r.created_at,
+    createdAt: toIso(r.created_at),
     side: r.side,
     guildName: r.side === 0 ? r.ally_name : r.enemy_name,
     opponentName: r.side === 0 ? r.enemy_name : r.ally_name,
@@ -141,15 +156,17 @@ export function getPlayerHistoryIndex(userId: number): PlayerHistoryEntry[] {
 }
 
 // 我方名單：該使用者所有場次中 side=0 的不重複玩家（職業取最近一場）
-export function getAllyRoster(userId: number): RosterEntry[] {
-  const rows = db
-    .prepare(
-      `SELECT p.name, p.cls, m.created_at
-       FROM players p JOIN matches m ON m.id = p.match_id
-       WHERE m.user_id = ? AND p.side = 0
-       ORDER BY m.created_at ASC, m.id ASC`
-    )
-    .all(userId) as { name: string; cls: string; created_at: string }[];
+export async function getAllyRoster(userId: number): Promise<RosterEntry[]> {
+  await ready();
+  const rows = await db
+    .selectFrom("players as p")
+    .innerJoin("matches as m", "m.id", "p.match_id")
+    .select(["p.name", "p.cls"])
+    .where("m.user_id", "=", userId)
+    .where("p.side", "=", 0)
+    .orderBy("m.created_at", "asc")
+    .orderBy("m.id", "asc")
+    .execute();
   const map = new Map<string, RosterEntry>();
   for (const r of rows) {
     const existing = map.get(r.name);
@@ -162,16 +179,13 @@ export function getAllyRoster(userId: number): RosterEntry[] {
   return [...map.values()];
 }
 
-export function getTeamAssignments(userId: number): TeamMap {
-  const rows = db
-    .prepare(
-      "SELECT player_name, main_team, sub_role FROM team_assignments WHERE user_id = ?"
-    )
-    .all(userId) as {
-    player_name: string;
-    main_team: MainTeam;
-    sub_role: SubRole | null;
-  }[];
+export async function getTeamAssignments(userId: number): Promise<TeamMap> {
+  await ready();
+  const rows = await db
+    .selectFrom("team_assignments")
+    .select(["player_name", "main_team", "sub_role"])
+    .where("user_id", "=", userId)
+    .execute();
   const map: TeamMap = {};
   for (const r of rows) {
     map[r.player_name] = { mainTeam: r.main_team, subRole: r.sub_role };
@@ -179,25 +193,30 @@ export function getTeamAssignments(userId: number): TeamMap {
   return map;
 }
 
-// 分享頁用：由場次反查擁有者的分團設定
-export function getTeamAssignmentsByMatch(matchId: number): TeamMap {
-  const row = db
-    .prepare("SELECT user_id FROM matches WHERE id = ?")
-    .get(matchId) as { user_id: number } | undefined;
-  return row ? getTeamAssignments(row.user_id) : {};
+async function ownerOfMatch(matchId: number): Promise<number | null> {
+  const row = await db
+    .selectFrom("matches")
+    .select("user_id")
+    .where("id", "=", matchId)
+    .executeTakeFirst();
+  return row ? row.user_id : null;
+}
+
+// 分享頁用：由場次反查擁有��的分團設定
+export async function getTeamAssignmentsByMatch(matchId: number): Promise<TeamMap> {
+  await ready();
+  const uid = await ownerOfMatch(matchId);
+  return uid === null ? {} : getTeamAssignments(uid);
 }
 
 // 單場分團調整（優先級高於統一陣容配置）
-export function getMatchTeamOverrides(matchId: number): TeamMap {
-  const rows = db
-    .prepare(
-      "SELECT player_name, main_team, sub_role FROM match_team_assignments WHERE match_id = ?"
-    )
-    .all(matchId) as {
-    player_name: string;
-    main_team: MainTeam;
-    sub_role: SubRole | null;
-  }[];
+export async function getMatchTeamOverrides(matchId: number): Promise<TeamMap> {
+  await ready();
+  const rows = await db
+    .selectFrom("match_team_assignments")
+    .select(["player_name", "main_team", "sub_role"])
+    .where("match_id", "=", matchId)
+    .execute();
   const map: TeamMap = {};
   for (const r of rows) {
     map[r.player_name] = { mainTeam: r.main_team, subRole: r.sub_role };
@@ -206,35 +225,39 @@ export function getMatchTeamOverrides(matchId: number): TeamMap {
 }
 
 // 使用者自訂的主團清單（依排序）
-export function getUserTeams(userId: number): UserTeam[] {
+export async function getUserTeams(userId: number): Promise<UserTeam[]> {
+  await ready();
   return db
-    .prepare(
-      "SELECT id, name FROM user_teams WHERE user_id = ? ORDER BY sort_order, id"
-    )
-    .all(userId) as UserTeam[];
+    .selectFrom("user_teams")
+    .select(["id", "name"])
+    .where("user_id", "=", userId)
+    .orderBy("sort_order")
+    .orderBy("id")
+    .execute();
 }
 
 // 分享頁用：由場次反查擁有者的主團清單
-export function getUserTeamsByMatch(matchId: number): UserTeam[] {
-  const row = db
-    .prepare("SELECT user_id FROM matches WHERE id = ?")
-    .get(matchId) as { user_id: number } | undefined;
-  return row ? getUserTeams(row.user_id) : [];
+export async function getUserTeamsByMatch(matchId: number): Promise<UserTeam[]> {
+  await ready();
+  const uid = await ownerOfMatch(matchId);
+  return uid === null ? [] : getUserTeams(uid);
 }
 
 // 使用者自訂的副職清單（依排序）
-export function getUserSubRoles(userId: number): UserSubRole[] {
+export async function getUserSubRoles(userId: number): Promise<UserSubRole[]> {
+  await ready();
   return db
-    .prepare(
-      "SELECT id, name FROM user_sub_roles WHERE user_id = ? ORDER BY sort_order, id"
-    )
-    .all(userId) as UserSubRole[];
+    .selectFrom("user_sub_roles")
+    .select(["id", "name"])
+    .where("user_id", "=", userId)
+    .orderBy("sort_order")
+    .orderBy("id")
+    .execute();
 }
 
 // 分享頁用：由場次反查擁有者的副職清單
-export function getUserSubRolesByMatch(matchId: number): UserSubRole[] {
-  const row = db
-    .prepare("SELECT user_id FROM matches WHERE id = ?")
-    .get(matchId) as { user_id: number } | undefined;
-  return row ? getUserSubRoles(row.user_id) : [];
+export async function getUserSubRolesByMatch(matchId: number): Promise<UserSubRole[]> {
+  await ready();
+  const uid = await ownerOfMatch(matchId);
+  return uid === null ? [] : getUserSubRoles(uid);
 }

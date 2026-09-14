@@ -1,140 +1,384 @@
-import Database from "better-sqlite3";
+import { Kysely, sql } from "kysely";
+import type { ColumnDefinitionBuilder, Generated } from "kysely";
+import { MysqlDialect, PostgresDialect, SqliteDialect } from "kysely";
 import fs from "node:fs";
 import path from "node:path";
 
-const dataDir = path.join(process.cwd(), "data");
-fs.mkdirSync(dataDir, { recursive: true });
+// ===== 資料表型別（Kysely）=====
+export interface UsersTable {
+  id: Generated<number>;
+  username: string;
+  password_hash: string;
+  created_at: Generated<Date | string>;
+}
+export interface SessionsTable {
+  token: string;
+  user_id: number;
+  expires_at: number; // epoch ms
+}
+export interface MatchesTable {
+  id: Generated<number>;
+  user_id: number;
+  title: string;
+  ally_name: string;
+  ally_count: number;
+  enemy_name: string;
+  enemy_count: number;
+  share_token: string | null;
+  created_at: Generated<Date | string>;
+}
+export interface PlayersTable {
+  id: Generated<number>;
+  match_id: number;
+  side: number; // 0 = 我方, 1 = 對方
+  name: string;
+  cls: string;
+  kills: number;
+  assists: number;
+  resources: number;
+  player_damage: number;
+  building_damage: number;
+  healing: number;
+  damage_taken: number;
+  deaths: number;
+  purify: number;
+  burn: number;
+}
+export interface TeamAssignmentsTable {
+  user_id: number;
+  player_name: string;
+  main_team: string;
+  sub_role: string | null;
+}
+export interface MatchTeamAssignmentsTable {
+  match_id: number;
+  player_name: string;
+  main_team: string;
+  sub_role: string | null;
+}
+export interface UserTeamsTable {
+  id: Generated<number>;
+  user_id: number;
+  name: string;
+  sort_order: number;
+}
+export interface UserSubRolesTable {
+  id: Generated<number>;
+  user_id: number;
+  name: string;
+  sort_order: number;
+}
+export interface SchemaMetaTable {
+  key: string;
+  value: string;
+}
+
+export interface Database {
+  users: UsersTable;
+  sessions: SessionsTable;
+  matches: MatchesTable;
+  players: PlayersTable;
+  team_assignments: TeamAssignmentsTable;
+  match_team_assignments: MatchTeamAssignmentsTable;
+  user_teams: UserTeamsTable;
+  user_sub_roles: UserSubRolesTable;
+  schema_meta: SchemaMetaTable;
+}
+
+// ===== 方言 =====
+export type Dialect = "sqlite" | "mysql" | "postgres";
+
+function resolveDialect(): Dialect {
+  const raw = (process.env.DB_DIALECT ?? "sqlite").toLowerCase();
+  if (raw === "sqlite" || raw === "mysql" || raw === "postgres") return raw;
+  if (raw === "postgresql" || raw === "pg") return "postgres";
+  if (raw === "mariadb") return "mysql";
+  throw new Error(`不支援的 DB_DIALECT：${raw}（可用：sqlite、mysql、postgres）`);
+}
+
+export const DIALECT: Dialect = resolveDialect();
+
+function requireUrl(): string {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error(`DB_DIALECT=${DIALECT} 需要設定 DATABASE_URL`);
+  return url;
+}
+
+function createDb(): Kysely<Database> {
+  if (DIALECT === "sqlite") {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const BetterSqlite3 = require("better-sqlite3") as typeof import("better-sqlite3");
+    const file = process.env.DATABASE_URL ?? path.join(process.cwd(), "data", "app.db");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const sqlite = new BetterSqlite3(file, { timeout: 10000 });
+    try {
+      sqlite.pragma("journal_mode = WAL");
+    } catch {
+      /* 其他連線正在切換 journal mode 時容忍失敗 */
+    }
+    sqlite.pragma("foreign_keys = ON");
+    return new Kysely<Database>({ dialect: new SqliteDialect({ database: sqlite }) });
+  }
+  if (DIALECT === "mysql") {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createPool } = require("mysql2") as typeof import("mysql2");
+    return new Kysely<Database>({
+      dialect: new MysqlDialect({
+        pool: createPool({ uri: requireUrl(), connectionLimit: 10 }),
+      }),
+    });
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Pool } = require("pg") as typeof import("pg");
+  return new Kysely<Database>({
+    dialect: new PostgresDialect({ pool: new Pool({ connectionString: requireUrl(), max: 10 }) }),
+  });
+}
 
 // 以 globalThis 快取連線：dev HMR 與 build worker 下避免重複開啟
-const g = globalThis as typeof globalThis & { __appDb?: Database.Database };
+const g = globalThis as typeof globalThis & {
+  __appDb?: Kysely<Database>;
+  __appDbReady?: Promise<void>;
+};
 
-const db =
-  g.__appDb ?? new Database(path.join(dataDir, "app.db"), { timeout: 10000 });
+export const db: Kysely<Database> = g.__appDb ?? createDb();
 g.__appDb = db;
 
-try {
-  db.pragma("journal_mode = WAL");
-} catch {
-  // 其他連線正在切換 journal mode 時容忍失敗（busy），不影響功能
-}
-db.pragma("foreign_keys = ON");
+// ===== 方言差異集中在這裡 =====
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS sessions (
-  token TEXT PRIMARY KEY,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  expires_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS matches (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  title TEXT NOT NULL,
-  ally_name TEXT NOT NULL,
-  ally_count INTEGER NOT NULL,
-  enemy_name TEXT NOT NULL,
-  enemy_count INTEGER NOT NULL,
-  share_token TEXT UNIQUE,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS players (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
-  side INTEGER NOT NULL, -- 0 = 我方, 1 = 對方
-  name TEXT NOT NULL,
-  cls TEXT NOT NULL,
-  kills INTEGER NOT NULL,
-  assists INTEGER NOT NULL,
-  resources INTEGER NOT NULL,
-  player_damage INTEGER NOT NULL,
-  building_damage INTEGER NOT NULL,
-  healing INTEGER NOT NULL,
-  damage_taken INTEGER NOT NULL,
-  deaths INTEGER NOT NULL,
-  purify INTEGER NOT NULL,
-  burn INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_players_match ON players(match_id);
-CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
-CREATE INDEX IF NOT EXISTS idx_matches_user ON matches(user_id);
-CREATE TABLE IF NOT EXISTS team_assignments (
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  player_name TEXT NOT NULL,
-  main_team TEXT NOT NULL,  -- 進攻 | 機動 | 防守
-  sub_role TEXT,            -- 保鑣 | 扛拆 | 空拆 | NULL
-  PRIMARY KEY (user_id, player_name)
-);
-CREATE TABLE IF NOT EXISTS match_team_assignments (
-  match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
-  player_name TEXT NOT NULL,
-  main_team TEXT NOT NULL,  -- 進攻 | 機動 | 防守
-  sub_role TEXT,            -- 保鑣 | 扛拆 | 空拆 | NULL
-  PRIMARY KEY (match_id, player_name)
-);
-CREATE TABLE IF NOT EXISTS user_teams (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  UNIQUE (user_id, name)
-);
-CREATE TABLE IF NOT EXISTS user_sub_roles (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  UNIQUE (user_id, name)
-);
-CREATE TABLE IF NOT EXISTS schema_meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-`);
+// 自動遞增主鍵：Postgres 用 serial（自帶遞增）；SQLite/MySQL 用 integer + autoIncrement
+const pkType = () => (DIALECT === "postgres" ? ("serial" as const) : ("integer" as const));
+const pkCol = (col: ColumnDefinitionBuilder) =>
+  DIALECT === "postgres" ? col.primaryKey() : col.primaryKey().autoIncrement();
+// 字串主鍵/唯一鍵在 MySQL 需要定長型別
+const keyText = () => (DIALECT === "mysql" ? sql`varchar(191)` : sql`text`);
+const nameText = keyText;
+// 時間戳記
+const nowDefault = () => sql`CURRENT_TIMESTAMP`;
+const timestampType = () =>
+  DIALECT === "postgres" ? sql`timestamptz` : DIALECT === "mysql" ? sql`datetime` : sql`text`;
+
+// ===== Schema =====
+
+// MySQL 不支援 CREATE INDEX IF NOT EXISTS，改查 information_schema 判斷
+async function createIndexIfMissing(
+  name: string,
+  table: keyof Database,
+  column: string
+): Promise<void> {
+  if (DIALECT === "mysql") {
+    const rows = await sql<{ c: number | string }>`
+      SELECT COUNT(*) AS c FROM information_schema.statistics
+      WHERE table_schema = DATABASE() AND table_name = ${table} AND index_name = ${name}
+    `.execute(db);
+    if (Number(rows.rows[0]?.c ?? 0) > 0) return;
+    await db.schema.createIndex(name).on(table).column(column).execute();
+    return;
+  }
+  await db.schema.createIndex(name).ifNotExists().on(table).column(column).execute();
+}
+
+async function ensureSchema(): Promise<void> {
+  await db.schema
+    .createTable("users")
+    .ifNotExists()
+    .addColumn("id", pkType(), pkCol)
+    .addColumn("username", keyText(), (c) => c.notNull().unique())
+    .addColumn("password_hash", sql`text`, (c) => c.notNull())
+    .addColumn("created_at", timestampType(), (c) => c.notNull().defaultTo(nowDefault()))
+    .execute();
+
+  await db.schema
+    .createTable("sessions")
+    .ifNotExists()
+    .addColumn("token", keyText(), (c) => c.primaryKey())
+    .addColumn("user_id", "integer", (c) =>
+      c.notNull().references("users.id").onDelete("cascade")
+    )
+    .addColumn("expires_at", "bigint", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createTable("matches")
+    .ifNotExists()
+    .addColumn("id", pkType(), pkCol)
+    .addColumn("user_id", "integer", (c) =>
+      c.notNull().references("users.id").onDelete("cascade")
+    )
+    .addColumn("title", sql`text`, (c) => c.notNull())
+    .addColumn("ally_name", sql`text`, (c) => c.notNull())
+    .addColumn("ally_count", "integer", (c) => c.notNull())
+    .addColumn("enemy_name", sql`text`, (c) => c.notNull())
+    .addColumn("enemy_count", "integer", (c) => c.notNull())
+    .addColumn("share_token", keyText(), (c) => c.unique())
+    .addColumn("created_at", timestampType(), (c) => c.notNull().defaultTo(nowDefault()))
+    .execute();
+
+  await db.schema
+    .createTable("players")
+    .ifNotExists()
+    .addColumn("id", pkType(), pkCol)
+    .addColumn("match_id", "integer", (c) =>
+      c.notNull().references("matches.id").onDelete("cascade")
+    )
+    .addColumn("side", "integer", (c) => c.notNull())
+    .addColumn("name", nameText(), (c) => c.notNull())
+    .addColumn("cls", sql`text`, (c) => c.notNull())
+    .addColumn("kills", "integer", (c) => c.notNull())
+    .addColumn("assists", "integer", (c) => c.notNull())
+    .addColumn("resources", "integer", (c) => c.notNull())
+    .addColumn("player_damage", "bigint", (c) => c.notNull())
+    .addColumn("building_damage", "bigint", (c) => c.notNull())
+    .addColumn("healing", "bigint", (c) => c.notNull())
+    .addColumn("damage_taken", "bigint", (c) => c.notNull())
+    .addColumn("deaths", "integer", (c) => c.notNull())
+    .addColumn("purify", "integer", (c) => c.notNull())
+    .addColumn("burn", "integer", (c) => c.notNull())
+    .execute();
+
+  await createIndexIfMissing("idx_players_match", "players", "match_id");
+  await createIndexIfMissing("idx_players_name", "players", "name");
+  await createIndexIfMissing("idx_matches_user", "matches", "user_id");
+
+  await db.schema
+    .createTable("team_assignments")
+    .ifNotExists()
+    .addColumn("user_id", "integer", (c) =>
+      c.notNull().references("users.id").onDelete("cascade")
+    )
+    .addColumn("player_name", nameText(), (c) => c.notNull())
+    .addColumn("main_team", sql`text`, (c) => c.notNull())
+    .addColumn("sub_role", sql`text`)
+    .addPrimaryKeyConstraint("pk_team_assignments", ["user_id", "player_name"])
+    .execute();
+
+  await db.schema
+    .createTable("match_team_assignments")
+    .ifNotExists()
+    .addColumn("match_id", "integer", (c) =>
+      c.notNull().references("matches.id").onDelete("cascade")
+    )
+    .addColumn("player_name", nameText(), (c) => c.notNull())
+    .addColumn("main_team", sql`text`, (c) => c.notNull())
+    .addColumn("sub_role", sql`text`)
+    .addPrimaryKeyConstraint("pk_match_team_assignments", ["match_id", "player_name"])
+    .execute();
+
+  await db.schema
+    .createTable("user_teams")
+    .ifNotExists()
+    .addColumn("id", pkType(), pkCol)
+    .addColumn("user_id", "integer", (c) =>
+      c.notNull().references("users.id").onDelete("cascade")
+    )
+    .addColumn("name", nameText(), (c) => c.notNull())
+    .addColumn("sort_order", "integer", (c) => c.notNull().defaultTo(0))
+    .addUniqueConstraint("uq_user_teams", ["user_id", "name"])
+    .execute();
+
+  await db.schema
+    .createTable("user_sub_roles")
+    .ifNotExists()
+    .addColumn("id", pkType(), pkCol)
+    .addColumn("user_id", "integer", (c) =>
+      c.notNull().references("users.id").onDelete("cascade")
+    )
+    .addColumn("name", nameText(), (c) => c.notNull())
+    .addColumn("sort_order", "integer", (c) => c.notNull().defaultTo(0))
+    .addUniqueConstraint("uq_user_sub_roles", ["user_id", "name"])
+    .execute();
+
+  await db.schema
+    .createTable("schema_meta")
+    .ifNotExists()
+    .addColumn("key", keyText(), (c) => c.primaryKey())
+    .addColumn("value", sql`text`, (c) => c.notNull())
+    .execute();
+
+  await runOnce("teams_seeded", async () => {
+    const users = await db.selectFrom("users").select("id").execute();
+    for (const u of users) await seedDefaultTeams(u.id);
+  });
+  await runOnce("sub_roles_seeded", async () => {
+    const users = await db.selectFrom("users").select("id").execute();
+    for (const u of users) await seedDefaultSubRoles(u.id);
+  });
+}
 
 export const DEFAULT_TEAM_NAMES = ["進攻", "機動", "防守"];
 export const DEFAULT_SUB_ROLE_NAMES = ["保鑣", "扛拆", "空拆"];
 
+// INSERT ... 忽略重複（三方言）
+export async function insertIgnore(
+  table: "user_teams" | "user_sub_roles",
+  row: { user_id: number; name: string; sort_order: number }
+): Promise<void> {
+  const q = db.insertInto(table).values(row);
+  if (DIALECT === "mysql") {
+    await q.ignore().execute();
+  } else {
+    await q.onConflict((oc) => oc.columns(["user_id", "name"]).doNothing()).execute();
+  }
+}
+
 // 為使用者建立預設主團（註冊時與一次性遷移時使用）
-export function seedDefaultTeams(userId: number): void {
-  const insert = db.prepare(
-    "INSERT OR IGNORE INTO user_teams (user_id, name, sort_order) VALUES (?, ?, ?)"
-  );
-  DEFAULT_TEAM_NAMES.forEach((name, i) => insert.run(userId, name, i));
+export async function seedDefaultTeams(userId: number): Promise<void> {
+  for (const [i, name] of DEFAULT_TEAM_NAMES.entries()) {
+    await insertIgnore("user_teams", { user_id: userId, name, sort_order: i });
+  }
 }
 
 // 為使用者建立預設副職（註冊時與一次性遷移時使用）
-export function seedDefaultSubRoles(userId: number): void {
-  const insert = db.prepare(
-    "INSERT OR IGNORE INTO user_sub_roles (user_id, name, sort_order) VALUES (?, ?, ?)"
-  );
-  DEFAULT_SUB_ROLE_NAMES.forEach((name, i) => insert.run(userId, name, i));
+export async function seedDefaultSubRoles(userId: number): Promise<void> {
+  for (const [i, name] of DEFAULT_SUB_ROLE_NAMES.entries()) {
+    await insertIgnore("user_sub_roles", { user_id: userId, name, sort_order: i });
+  }
 }
 
-// 一次性遷移：主團/副職改為可自訂前建立的帳號，補上預設清單
-function runOnce(key: string, fn: () => void): void {
-  const done = db
-    .prepare("SELECT value FROM schema_meta WHERE key = ?")
-    .get(key) as { value: string } | undefined;
+// 一次性遷移：以 schema_meta 記錄已跑過的 key
+async function runOnce(key: string, fn: () => Promise<void>): Promise<void> {
+  const done = await db
+    .selectFrom("schema_meta")
+    .select("value")
+    .where("key", "=", key)
+    .executeTakeFirst();
   if (done) return;
-  db.transaction(() => {
-    fn();
-    db.prepare("INSERT INTO schema_meta (key, value) VALUES (?, '1')").run(key);
-  })();
+  await fn();
+  await db.insertInto("schema_meta").values({ key, value: "1" }).execute();
 }
 
-runOnce("teams_seeded", () => {
-  const users = db.prepare("SELECT id FROM users").all() as { id: number }[];
-  for (const u of users) seedDefaultTeams(u.id);
-});
+// 確保 schema 已建立（所有查詢前呼叫；只會真正執行一次）
+export function ready(): Promise<void> {
+  if (!g.__appDbReady) {
+    g.__appDbReady = ensureSchema().catch((e) => {
+      g.__appDbReady = undefined; // 失敗時允許下次重試
+      throw e;
+    });
+  }
+  return g.__appDbReady;
+}
 
-runOnce("sub_roles_seeded", () => {
-  const users = db.prepare("SELECT id FROM users").all() as { id: number }[];
-  for (const u of users) seedDefaultSubRoles(u.id);
-});
+// 取得 INSERT 後的自增 id（Postgres 用 RETURNING，其餘用 insertId）
+export async function insertReturningId<T extends "users" | "matches" | "user_teams" | "user_sub_roles">(
+  table: T,
+  values: Parameters<ReturnType<typeof db.insertInto<T>>["values"]>[0]
+): Promise<number> {
+  const q = db.insertInto(table).values(values);
+  if (DIALECT === "postgres") {
+    const row = await q.returning("id" as never).executeTakeFirstOrThrow();
+    return Number((row as unknown as { id: number }).id);
+  }
+  const res = await q.executeTakeFirstOrThrow();
+  return Number(res.insertId);
+}
+
+// 資料庫回傳的時間戳記統一轉成 ISO 字串（SQLite 回 'YYYY-MM-DD HH:MM:SS' UTC 字串、其餘回 Date）
+export function toIso(v: Date | string | null | undefined): string {
+  if (!v) return "";
+  if (v instanceof Date) return v.toISOString();
+  const s = String(v);
+  if (s.includes("T")) return s;
+  return s.replace(" ", "T") + "Z";
+}
 
 export default db;

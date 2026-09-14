@@ -11,10 +11,12 @@ import {
 export default async function TeamsPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const roster = getAllyRoster(user.id);
-  const assignments = getTeamAssignments(user.id);
-  const userTeams = getUserTeams(user.id);
-  const userSubRoles = getUserSubRoles(user.id);
+  const [roster, assignments, userTeams, userSubRoles] = await Promise.all([
+    getAllyRoster(user.id),
+    getTeamAssignments(user.id),
+    getUserTeams(user.id),
+    getUserSubRoles(user.id),
+  ]);
   return (
     <TeamConfig
       roster={roster}

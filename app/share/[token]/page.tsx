@@ -10,12 +10,16 @@ import {
 
 export default async function SharePage(props: PageProps<"/share/[token]">) {
   const { token } = await props.params;
-  const match = getMatchByShareToken(token);
+  const match = await getMatchByShareToken(token);
   if (!match) notFound();
-  const teams = getTeamAssignmentsByMatch(match.id);
-  const matchTeams = getMatchTeamOverrides(match.id);
-  const teamNames = getUserTeamsByMatch(match.id).map((t) => t.name);
-  const subRoleNames = getUserSubRolesByMatch(match.id).map((s) => s.name);
+  const [teams, matchTeams, userTeams, userSubRoles] = await Promise.all([
+    getTeamAssignmentsByMatch(match.id),
+    getMatchTeamOverrides(match.id),
+    getUserTeamsByMatch(match.id),
+    getUserSubRolesByMatch(match.id),
+  ]);
+  const teamNames = userTeams.map((t) => t.name);
+  const subRoleNames = userSubRoles.map((s) => s.name);
   return (
     <MatchView
       match={match}

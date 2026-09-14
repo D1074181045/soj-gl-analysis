@@ -19,12 +19,13 @@ npm run lint         # ESLint
 
 ```bash
 node scripts/seed-test.mjs   # 建 testuser/test123456 帳號、匯入根目錄兩個 CSV、開啟一場分享
+                             # 走 Kysely，依 DB_DIALECT/DATABASE_URL 連線（三方言皆可）；需伺服器先跑過一次建好 schema
                              # 輸出 JSON：{sessionToken, shareToken, firstMatchId}
 node scripts/ui-test.mjs <shareToken>   # Playwright 驅動系統 Chrome (/usr/bin/google-chrome)
                                         # 跑完整 UI 流程並截圖到 /tmp/shots/
 ```
 
-測試完把 testuser 刪掉（`DELETE FROM users WHERE username='testuser'`，FK cascade 會清掉附屬資料）。**使用者可能有真實帳號資料在 `data/app.db`，不要整檔刪除。**
+測試完把 testuser 刪掉（`DELETE FROM users WHERE username='testuser'`，FK cascade 會清掉附屬資料；SQLite 可用 `node -e "require('better-sqlite3')('data/app.db')..."`）。**使用者可能有真實帳號資料在 `data/app.db`，不要整檔刪除。**
 
 重啟 production 伺服器的正確方式（`lsof -sTCP:LISTEN` 在此環境抓不到 next-server，殺不乾淨會 EADDRINUSE，舊伺服器配新 build 會出現 chunk 500）：
 
@@ -36,11 +37,12 @@ Docker：`docker compose up -d --build`。本機 `~/.docker/config.json` 的 cre
 
 ## 架構
 
-Next.js 16（App Router、Turbopack）+ TypeScript + Tailwind 4 + better-sqlite3 + Recharts。Next 16 慣例：`await cookies()`、`await props.params`、全域 `PageProps<'/route'>` 型別；`webapp/AGENTS.md`（由 `next dev` 自動產生，勿刪）提醒 API 可能與訓練資料不同，可查 `node_modules/next/dist/docs/`。
+Next.js 16（App Router、Turbopack）+ TypeScript + Tailwind 4 + Kysely（SQLite／MySQL／PostgreSQL 三方言）+ Recharts。Next 16 慣例：`await cookies()`、`await props.params`、全域 `PageProps<'/route'>` 型別；`webapp/AGENTS.md`（由 `next dev` 自動產生，勿刪）提醒 API 可能與訓練資料不同，可查 `node_modules/next/dist/docs/`。
 
 ### 資料流
 
-- **`lib/db.ts`**：better-sqlite3 單例（globalThis 快取避免 HMR/多 worker 重複開啟；WAL；schema 於載入時自動建立）。DB 在 `webapp/data/app.db`（gitignored）。`next.config.ts` 需保持 `serverExternalPackages: ["better-sqlite3"]` 與 `output: "standalone"`（Docker 用）。
+- **`lib/db.ts`**：Kysely 連線單例（globalThis 快取），依 `DB_DIALECT`（sqlite 預設／mysql／postgres）＋`DATABASE_URL` 建立對應 dialect；驅動 better-sqlite3／mysql2／pg 以 `require` 延遲載入，`next.config.ts` 的 `serverExternalPackages` 必須列出三者並保持 `output: "standalone"`。**所有查詢前先 `await ready()`**（第一次呼叫時以 Kysely schema builder 建表，`createTable().ifNotExists()`；失敗會清掉快取讓下次重試）。**方言差異只允許出現在這個檔案與 `actions.ts` 的 upsert helper**：自增主鍵（PG `serial`／其餘 `integer autoIncrement`）、取回 id（PG `returning`／其餘 `insertId`，見 `insertReturningId`）、字串主鍵/唯一鍵在 MySQL 需 `varchar(191)`（`keyText()`）、時間戳型別（`timestamptz`／`datetime`／`text`）、`CREATE INDEX IF NOT EXISTS`（MySQL 不支援，`createIndexIfMissing` 查 information_schema）、insert-ignore（MySQL `.ignore()`／其餘 `onConflict().doNothing()`）、upsert（MySQL `onDuplicateKeyUpdate`／其餘 `onConflict().doUpdateSet`）。`bigint` 欄位（傷害/治療/expires_at）在 pg 可能回字串，`data.ts` 一律 `Number()`；`created_at` 用 `toIso()` 統一成 ISO 字串。資料層全部 async，頁面要 `await`。
+- **本機驗證三方言**：`docker run` 起 `postgres:16-alpine`／`mysql:8`（記得 `--character-set-server=utf8mb4`），用 `DB_DIALECT=… DATABASE_URL=… PORT=3010 npm start` 另開伺服器，跑同一份 Playwright 腳本即可；三者共用同一次 `npm run build`。
 - **`lib/parse.ts`**：結算 CSV 解析。格式：兩個幫會區塊，區塊開頭是 2 欄列（`"幫會名","人數"`），之後為 12 欄玩家列；逐行掃描辨識，不靠固定行號。編碼 UTF-8，出現替換字元時 fallback GB18030。
 - **`lib/actions.ts`**（`"use server"`）：所有寫入操作——註冊/登入/登出、上傳、刪除、分享開關。每個動作都做 session 與場次擁有權檢查。表單用 `useActionState`，回傳 `{error?}`。
 - **`lib/auth.ts`**：自建 session（`session` cookie ↔ sessions 資料表，bcryptjs 雜湊）。

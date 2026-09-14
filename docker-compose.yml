@@ -5,10 +5,20 @@ services:
     container_name: soj-gl-analysis
     ports:
       - "3001:3000"
+    environment:
+      # 預設 SQLite（資料放 volume）。改用 MySQL/PostgreSQL 時：
+      #   1) 把 DB_DIALECT 改成 mysql 或 postgres
+      #   2) 設定 DATABASE_URL 指向你的資料庫
+      #   3) 解開下方 db 服務與 depends_on 的註解（或改連外部資料庫）
+      DB_DIALECT: ${DB_DIALECT:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-}
     volumes:
       # SQLite 資料庫持久化（named volume；改成 ./data:/app/data 可直接用主機目錄）
       - app-data:/app/data
     restart: unless-stopped
+    # depends_on:
+    #   db:
+    #     condition: service_healthy
     healthcheck:
       test:
         [
@@ -22,5 +32,39 @@ services:
       retries: 3
       start_period: 10s
 
+  # ---- PostgreSQL 範例（搭配 DB_DIALECT=postgres、DATABASE_URL=postgres://app:app@db:5432/app）----
+  # db:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_USER: app
+  #     POSTGRES_PASSWORD: app
+  #     POSTGRES_DB: app
+  #   volumes:
+  #     - pg-data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U app -d app"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 10
+
+  # ---- MySQL 範例（搭配 DB_DIALECT=mysql、DATABASE_URL=mysql://app:app@db:3306/app）----
+  # db:
+  #   image: mysql:8
+  #   command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: root
+  #     MYSQL_USER: app
+  #     MYSQL_PASSWORD: app
+  #     MYSQL_DATABASE: app
+  #   volumes:
+  #     - mysql-data:/var/lib/mysql
+  #   healthcheck:
+  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uapp", "-papp"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 10
+
 volumes:
   app-data:
+  # pg-data:
+  # mysql-data:

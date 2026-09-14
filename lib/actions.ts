@@ -4,7 +4,15 @@ import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import db, { seedDefaultSubRoles, seedDefaultTeams } from "./db";
+import type { ExpressionBuilder } from "kysely";
+import db, {
+  DIALECT,
+  insertReturningId,
+  ready,
+  seedDefaultSubRoles,
+  seedDefaultTeams,
+} from "./db";
+import type { Database } from "./db";
 import { createSession, destroySession, getCurrentUser } from "./auth";
 import { decodeCsv, parseGuildWarCsv } from "./parse";
 import { getUserSubRoles, getUserTeams } from "./data";
@@ -27,15 +35,17 @@ export async function registerAction(
   if (password.length < 6) {
     return { error: "密碼至少需要 6 個字元" };
   }
-  const exists = db.prepare("SELECT id FROM users WHERE username = ?").get(username);
+  await ready();
+  const exists = await db
+    .selectFrom("users")
+    .select("id")
+    .where("username", "=", username)
+    .executeTakeFirst();
   if (exists) return { error: "此帳號已被註冊" };
   const hash = bcrypt.hashSync(password, 10);
-  const info = db
-    .prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)")
-    .run(username, hash);
-  const userId = Number(info.lastInsertRowid);
-  seedDefaultTeams(userId);
-  seedDefaultSubRoles(userId);
+  const userId = await insertReturningId("users", { username, password_hash: hash });
+  await seedDefaultTeams(userId);
+  await seedDefaultSubRoles(userId);
   await createSession(userId);
   redirect("/dashboard");
 }
@@ -46,9 +56,12 @@ export async function loginAction(
 ): Promise<ActionState> {
   const username = String(formData.get("username") ?? "").trim();
   const password = String(formData.get("password") ?? "");
-  const row = db
-    .prepare("SELECT id, password_hash AS hash FROM users WHERE username = ?")
-    .get(username) as { id: number; hash: string } | undefined;
+  await ready();
+  const row = await db
+    .selectFrom("users")
+    .select(["id", "password_hash as hash"])
+    .where("username", "=", username)
+    .executeTakeFirst();
   if (!row || !bcrypt.compareSync(password, row.hash)) {
     return { error: "帳號或密碼錯誤" };
   }
@@ -88,46 +101,62 @@ export async function uploadMatchAction(
   const title =
     customTitle || `${parsed.ally.guildName} vs ${parsed.enemy.guildName}`;
 
-  const insertMatch = db.prepare(
-    `INSERT INTO matches (user_id, title, ally_name, ally_count, enemy_name, enemy_count)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  );
-  const insertPlayer = db.prepare(
-    `INSERT INTO players (match_id, side, name, cls, kills, assists, resources,
-       player_damage, building_damage, healing, damage_taken, deaths, purify, burn)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-
-  const matchId = db.transaction(() => {
-    const info = insertMatch.run(
-      user.id,
+  await ready();
+  const matchId = await db.transaction().execute(async (trx) => {
+    // 取得自增 id：Postgres 用 RETURNING，其餘用 insertId
+    const insert = trx.insertInto("matches").values({
+      user_id: user.id,
       title,
-      parsed.ally.guildName,
-      parsed.ally.memberCount,
-      parsed.enemy.guildName,
-      parsed.enemy.memberCount
+      ally_name: parsed.ally.guildName,
+      ally_count: parsed.ally.memberCount,
+      enemy_name: parsed.enemy.guildName,
+      enemy_count: parsed.enemy.memberCount,
+    });
+    let id: number;
+    if (DIALECT === "postgres") {
+      const row = await insert.returning("id").executeTakeFirstOrThrow();
+      id = Number(row.id);
+    } else {
+      const res = await insert.executeTakeFirstOrThrow();
+      id = Number(res.insertId);
+    }
+
+    const rows = [parsed.ally, parsed.enemy].flatMap((section, side) =>
+      section.players.map((p) => ({
+        match_id: id,
+        side,
+        name: p.name,
+        cls: p.cls,
+        kills: p.kills,
+        assists: p.assists,
+        resources: p.resources,
+        player_damage: p.playerDamage,
+        building_damage: p.buildingDamage,
+        healing: p.healing,
+        damage_taken: p.damageTaken,
+        deaths: p.deaths,
+        purify: p.purify,
+        burn: p.burn,
+      }))
     );
-    const id = Number(info.lastInsertRowid);
-    for (const [side, section] of [parsed.ally, parsed.enemy].entries()) {
-      for (const p of section.players) {
-        insertPlayer.run(
-          id, side, p.name, p.cls, p.kills, p.assists, p.resources,
-          p.playerDamage, p.buildingDamage, p.healing, p.damageTaken,
-          p.deaths, p.purify, p.burn
-        );
-      }
+    // 分批插入，避免單一語句參數過多
+    for (let i = 0; i < rows.length; i += 50) {
+      await trx.insertInto("players").values(rows.slice(i, i + 50)).execute();
     }
     return id;
-  })();
+  });
 
   revalidatePath("/dashboard");
   redirect(`/match/${matchId}`);
 }
 
-function requireOwnedMatch(userId: number, matchId: number) {
-  const row = db
-    .prepare("SELECT id FROM matches WHERE id = ? AND user_id = ?")
-    .get(matchId, userId);
+async function requireOwnedMatch(userId: number, matchId: number): Promise<void> {
+  const row = await db
+    .selectFrom("matches")
+    .select("id")
+    .where("id", "=", matchId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst();
   if (!row) throw new Error("找不到場次或無權限");
 }
 
@@ -135,8 +164,8 @@ export async function deleteMatchAction(formData: FormData): Promise<void> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
   const id = Number(formData.get("id"));
-  requireOwnedMatch(user.id, id);
-  db.prepare("DELETE FROM matches WHERE id = ?").run(id);
+  await requireOwnedMatch(user.id, id);
+  await db.deleteFrom("matches").where("id", "=", id).execute();
   revalidatePath("/dashboard");
 }
 
@@ -144,9 +173,9 @@ export async function enableShareAction(formData: FormData): Promise<void> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
   const id = Number(formData.get("id"));
-  requireOwnedMatch(user.id, id);
+  await requireOwnedMatch(user.id, id);
   const token = crypto.randomBytes(9).toString("base64url");
-  db.prepare("UPDATE matches SET share_token = ? WHERE id = ?").run(token, id);
+  await db.updateTable("matches").set({ share_token: token }).where("id", "=", id).execute();
   revalidatePath("/dashboard");
   revalidatePath(`/match/${id}`);
 }
@@ -155,29 +184,64 @@ export async function disableShareAction(formData: FormData): Promise<void> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
   const id = Number(formData.get("id"));
-  requireOwnedMatch(user.id, id);
-  db.prepare("UPDATE matches SET share_token = NULL WHERE id = ?").run(id);
+  await requireOwnedMatch(user.id, id);
+  await db.updateTable("matches").set({ share_token: null }).where("id", "=", id).execute();
   revalidatePath("/dashboard");
   revalidatePath(`/match/${id}`);
 }
 
 // 驗證主團/副職；兩者都必須是該使用者自訂清單中的名稱（副職可為 null）
-function validateTeamChoice(
+async function validateTeamChoice(
   userId: number,
   mainTeam: string,
   subRole: string | null
-): string | null {
-  const names = getUserTeams(userId).map((t) => t.name);
+): Promise<string | null> {
+  const names = (await getUserTeams(userId)).map((t) => t.name);
   if (!names.includes(mainTeam)) {
     return "主團必須是陣容配置中已建立的分團";
   }
   if (subRole !== null) {
-    const subNames = getUserSubRoles(userId).map((s) => s.name);
+    const subNames = (await getUserSubRoles(userId)).map((s) => s.name);
     if (!subNames.includes(subRole)) {
       return "副職必須是陣容配置中已建立的副職";
     }
   }
   return null;
+}
+
+// UPSERT（三方言）：MySQL 用 ON DUPLICATE KEY UPDATE，其餘用 ON CONFLICT DO UPDATE
+async function upsertTeamAssignment(
+  userId: number,
+  playerName: string,
+  mainTeam: string,
+  subRole: string | null
+): Promise<void> {
+  const update = { main_team: mainTeam, sub_role: subRole };
+  const q = db
+    .insertInto("team_assignments")
+    .values({ user_id: userId, player_name: playerName, ...update });
+  if (DIALECT === "mysql") await q.onDuplicateKeyUpdate(update).execute();
+  else
+    await q
+      .onConflict((oc) => oc.columns(["user_id", "player_name"]).doUpdateSet(update))
+      .execute();
+}
+
+async function upsertMatchTeamAssignment(
+  matchId: number,
+  playerName: string,
+  mainTeam: string,
+  subRole: string | null
+): Promise<void> {
+  const update = { main_team: mainTeam, sub_role: subRole };
+  const q = db
+    .insertInto("match_team_assignments")
+    .values({ match_id: matchId, player_name: playerName, ...update });
+  if (DIALECT === "mysql") await q.onDuplicateKeyUpdate(update).execute();
+  else
+    await q
+      .onConflict((oc) => oc.columns(["match_id", "player_name"]).doUpdateSet(update))
+      .execute();
 }
 
 // 設定分團：主團必選（使用者自訂清單中擇一）、副職可為空（使用者自訂清單中擇一）
@@ -190,26 +254,21 @@ export async function setTeamAssignmentAction(
   if (!user) redirect("/login");
   const name = playerName.trim();
   if (!name) return { error: "玩家名字不可為空" };
-  const err = validateTeamChoice(user.id, mainTeam, subRole);
+  const err = await validateTeamChoice(user.id, mainTeam, subRole);
   if (err) return { error: err };
-  db.prepare(
-    `INSERT INTO team_assignments (user_id, player_name, main_team, sub_role)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(user_id, player_name)
-     DO UPDATE SET main_team = excluded.main_team, sub_role = excluded.sub_role`
-  ).run(user.id, name, mainTeam, subRole);
+  await upsertTeamAssignment(user.id, name, mainTeam, subRole);
   revalidatePath("/teams");
   return {};
 }
 
-export async function clearTeamAssignmentAction(
-  playerName: string
-): Promise<void> {
+export async function clearTeamAssignmentAction(playerName: string): Promise<void> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  db.prepare(
-    "DELETE FROM team_assignments WHERE user_id = ? AND player_name = ?"
-  ).run(user.id, playerName.trim());
+  await db
+    .deleteFrom("team_assignments")
+    .where("user_id", "=", user.id)
+    .where("player_name", "=", playerName.trim())
+    .execute();
   revalidatePath("/teams");
 }
 
@@ -222,17 +281,12 @@ export async function setMatchTeamAssignmentAction(
 ): Promise<{ error?: string }> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  requireOwnedMatch(user.id, matchId);
+  await requireOwnedMatch(user.id, matchId);
   const name = playerName.trim();
   if (!name) return { error: "玩家名字不可為空" };
-  const err = validateTeamChoice(user.id, mainTeam, subRole);
+  const err = await validateTeamChoice(user.id, mainTeam, subRole);
   if (err) return { error: err };
-  db.prepare(
-    `INSERT INTO match_team_assignments (match_id, player_name, main_team, sub_role)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(match_id, player_name)
-     DO UPDATE SET main_team = excluded.main_team, sub_role = excluded.sub_role`
-  ).run(matchId, name, mainTeam, subRole);
+  await upsertMatchTeamAssignment(matchId, name, mainTeam, subRole);
   revalidatePath(`/match/${matchId}`);
   return {};
 }
@@ -244,10 +298,12 @@ export async function clearMatchTeamAssignmentAction(
 ): Promise<void> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  requireOwnedMatch(user.id, matchId);
-  db.prepare(
-    "DELETE FROM match_team_assignments WHERE match_id = ? AND player_name = ?"
-  ).run(matchId, playerName.trim());
+  await requireOwnedMatch(user.id, matchId);
+  await db
+    .deleteFrom("match_team_assignments")
+    .where("match_id", "=", matchId)
+    .where("player_name", "=", playerName.trim())
+    .execute();
   revalidatePath(`/match/${matchId}`);
 }
 
@@ -258,35 +314,53 @@ export interface TeamListResult {
   teams?: UserTeam[];
 }
 
-function validateTeamName(name: string, userId: number, excludeId?: number): string | null {
+async function validateTeamName(
+  name: string,
+  userId: number,
+  excludeId?: number
+): Promise<string | null> {
   if (!name) return "分團名稱不可為空";
   if (name.length > 12) return "分團名稱最多 12 個字";
   if (name === UNASSIGNED_LABEL) return `「${UNASSIGNED_LABEL}」為保留名稱`;
-  const dup = db
-    .prepare("SELECT id FROM user_teams WHERE user_id = ? AND name = ?")
-    .get(userId, name) as { id: number } | undefined;
+  const dup = await db
+    .selectFrom("user_teams")
+    .select("id")
+    .where("user_id", "=", userId)
+    .where("name", "=", name)
+    .executeTakeFirst();
   if (dup && dup.id !== excludeId) return "已有同名分團";
   return null;
 }
+
+// 下一個排序值與目前數量（新增前用）
+async function nextSortOrder(table: "user_teams" | "user_sub_roles", userId: number) {
+  const row = await db
+    .selectFrom(table)
+    .select((eb) => [eb.fn.max("sort_order").as("m"), eb.fn.countAll().as("c")])
+    .where("user_id", "=", userId)
+    .executeTakeFirstOrThrow();
+  return { next: Number(row.m ?? -1) + 1, count: Number(row.c) };
+}
+
+// 子查詢：該使用者擁有的所有場次 id（供 match_team_assignments 的批次更新/刪除）
+const ownedMatchIds =
+  (userId: number) => (eb: ExpressionBuilder<Database, "match_team_assignments">) =>
+    eb.selectFrom("matches").select("matches.id").where("matches.user_id", "=", userId);
 
 export async function addTeamAction(rawName: string): Promise<TeamListResult> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
   const name = rawName.trim();
-  const err = validateTeamName(name, user.id);
+  const err = await validateTeamName(name, user.id);
   if (err) return { error: err };
-  const count = (
-    db.prepare("SELECT COUNT(*) AS c FROM user_teams WHERE user_id = ?").get(user.id) as {
-      c: number;
-    }
-  ).c;
+  const { next, count } = await nextSortOrder("user_teams", user.id);
   if (count >= 20) return { error: "分團數量上限為 20 個" };
-  db.prepare(
-    `INSERT INTO user_teams (user_id, name, sort_order)
-     VALUES (?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM user_teams WHERE user_id = ?))`
-  ).run(user.id, name, user.id);
+  await db
+    .insertInto("user_teams")
+    .values({ user_id: user.id, name, sort_order: next })
+    .execute();
   revalidatePath("/teams");
-  return { teams: getUserTeams(user.id) };
+  return { teams: await getUserTeams(user.id) };
 }
 
 export async function renameTeamAction(
@@ -295,50 +369,63 @@ export async function renameTeamAction(
 ): Promise<TeamListResult> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const row = db
-    .prepare("SELECT name FROM user_teams WHERE id = ? AND user_id = ?")
-    .get(teamId, user.id) as { name: string } | undefined;
+  const row = await db
+    .selectFrom("user_teams")
+    .select("name")
+    .where("id", "=", teamId)
+    .where("user_id", "=", user.id)
+    .executeTakeFirst();
   if (!row) return { error: "找不到分團" };
   const name = rawName.trim();
-  if (name === row.name) return { teams: getUserTeams(user.id) };
-  const err = validateTeamName(name, user.id, teamId);
+  if (name === row.name) return { teams: await getUserTeams(user.id) };
+  const err = await validateTeamName(name, user.id, teamId);
   if (err) return { error: err };
   // 同步更新統一配置與所有本場調整中的主團名稱
-  db.transaction(() => {
-    db.prepare("UPDATE user_teams SET name = ? WHERE id = ?").run(name, teamId);
-    db.prepare(
-      "UPDATE team_assignments SET main_team = ? WHERE user_id = ? AND main_team = ?"
-    ).run(name, user.id, row.name);
-    db.prepare(
-      `UPDATE match_team_assignments SET main_team = ?
-       WHERE main_team = ? AND match_id IN (SELECT id FROM matches WHERE user_id = ?)`
-    ).run(name, row.name, user.id);
-  })();
+  await db.transaction().execute(async (trx) => {
+    await trx.updateTable("user_teams").set({ name }).where("id", "=", teamId).execute();
+    await trx
+      .updateTable("team_assignments")
+      .set({ main_team: name })
+      .where("user_id", "=", user.id)
+      .where("main_team", "=", row.name)
+      .execute();
+    await trx
+      .updateTable("match_team_assignments")
+      .set({ main_team: name })
+      .where("main_team", "=", row.name)
+      .where("match_id", "in", ownedMatchIds(user.id))
+      .execute();
+  });
   revalidatePath("/teams");
-  return { teams: getUserTeams(user.id) };
+  return { teams: await getUserTeams(user.id) };
 }
 
 // 刪除分團會一併清除該團的統一配置與本場調整
 export async function deleteTeamAction(teamId: number): Promise<TeamListResult> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const row = db
-    .prepare("SELECT name FROM user_teams WHERE id = ? AND user_id = ?")
-    .get(teamId, user.id) as { name: string } | undefined;
+  const row = await db
+    .selectFrom("user_teams")
+    .select("name")
+    .where("id", "=", teamId)
+    .where("user_id", "=", user.id)
+    .executeTakeFirst();
   if (!row) return { error: "找不到分團" };
-  db.transaction(() => {
-    db.prepare("DELETE FROM user_teams WHERE id = ?").run(teamId);
-    db.prepare("DELETE FROM team_assignments WHERE user_id = ? AND main_team = ?").run(
-      user.id,
-      row.name
-    );
-    db.prepare(
-      `DELETE FROM match_team_assignments
-       WHERE main_team = ? AND match_id IN (SELECT id FROM matches WHERE user_id = ?)`
-    ).run(row.name, user.id);
-  })();
+  await db.transaction().execute(async (trx) => {
+    await trx.deleteFrom("user_teams").where("id", "=", teamId).execute();
+    await trx
+      .deleteFrom("team_assignments")
+      .where("user_id", "=", user.id)
+      .where("main_team", "=", row.name)
+      .execute();
+    await trx
+      .deleteFrom("match_team_assignments")
+      .where("main_team", "=", row.name)
+      .where("match_id", "in", ownedMatchIds(user.id))
+      .execute();
+  });
   revalidatePath("/teams");
-  return { teams: getUserTeams(user.id) };
+  return { teams: await getUserTeams(user.id) };
 }
 
 // ===== 副職管理（使用者自訂清單；與主團管理對稱）=====
@@ -348,16 +435,19 @@ export interface SubRoleListResult {
   subRoles?: UserSubRole[];
 }
 
-function validateSubRoleName(
+async function validateSubRoleName(
   name: string,
   userId: number,
   excludeId?: number
-): string | null {
+): Promise<string | null> {
   if (!name) return "副職名稱不可為空";
   if (name.length > 12) return "副職名稱最多 12 個字";
-  const dup = db
-    .prepare("SELECT id FROM user_sub_roles WHERE user_id = ? AND name = ?")
-    .get(userId, name) as { id: number } | undefined;
+  const dup = await db
+    .selectFrom("user_sub_roles")
+    .select("id")
+    .where("user_id", "=", userId)
+    .where("name", "=", name)
+    .executeTakeFirst();
   if (dup && dup.id !== excludeId) return "已有同名副職";
   return null;
 }
@@ -366,20 +456,16 @@ export async function addSubRoleAction(rawName: string): Promise<SubRoleListResu
   const user = await getCurrentUser();
   if (!user) redirect("/login");
   const name = rawName.trim();
-  const err = validateSubRoleName(name, user.id);
+  const err = await validateSubRoleName(name, user.id);
   if (err) return { error: err };
-  const count = (
-    db.prepare("SELECT COUNT(*) AS c FROM user_sub_roles WHERE user_id = ?").get(user.id) as {
-      c: number;
-    }
-  ).c;
+  const { next, count } = await nextSortOrder("user_sub_roles", user.id);
   if (count >= 20) return { error: "副職數量上限為 20 個" };
-  db.prepare(
-    `INSERT INTO user_sub_roles (user_id, name, sort_order)
-     VALUES (?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM user_sub_roles WHERE user_id = ?))`
-  ).run(user.id, name, user.id);
+  await db
+    .insertInto("user_sub_roles")
+    .values({ user_id: user.id, name, sort_order: next })
+    .execute();
   revalidatePath("/teams");
-  return { subRoles: getUserSubRoles(user.id) };
+  return { subRoles: await getUserSubRoles(user.id) };
 }
 
 export async function renameSubRoleAction(
@@ -388,47 +474,63 @@ export async function renameSubRoleAction(
 ): Promise<SubRoleListResult> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const row = db
-    .prepare("SELECT name FROM user_sub_roles WHERE id = ? AND user_id = ?")
-    .get(subRoleId, user.id) as { name: string } | undefined;
+  const row = await db
+    .selectFrom("user_sub_roles")
+    .select("name")
+    .where("id", "=", subRoleId)
+    .where("user_id", "=", user.id)
+    .executeTakeFirst();
   if (!row) return { error: "找不到副職" };
   const name = rawName.trim();
-  if (name === row.name) return { subRoles: getUserSubRoles(user.id) };
-  const err = validateSubRoleName(name, user.id, subRoleId);
+  if (name === row.name) return { subRoles: await getUserSubRoles(user.id) };
+  const err = await validateSubRoleName(name, user.id, subRoleId);
   if (err) return { error: err };
   // 同步更新統一配置與所有本場調整中的副職名稱
-  db.transaction(() => {
-    db.prepare("UPDATE user_sub_roles SET name = ? WHERE id = ?").run(name, subRoleId);
-    db.prepare(
-      "UPDATE team_assignments SET sub_role = ? WHERE user_id = ? AND sub_role = ?"
-    ).run(name, user.id, row.name);
-    db.prepare(
-      `UPDATE match_team_assignments SET sub_role = ?
-       WHERE sub_role = ? AND match_id IN (SELECT id FROM matches WHERE user_id = ?)`
-    ).run(name, row.name, user.id);
-  })();
+  await db.transaction().execute(async (trx) => {
+    await trx.updateTable("user_sub_roles").set({ name }).where("id", "=", subRoleId).execute();
+    await trx
+      .updateTable("team_assignments")
+      .set({ sub_role: name })
+      .where("user_id", "=", user.id)
+      .where("sub_role", "=", row.name)
+      .execute();
+    await trx
+      .updateTable("match_team_assignments")
+      .set({ sub_role: name })
+      .where("sub_role", "=", row.name)
+      .where("match_id", "in", ownedMatchIds(user.id))
+      .execute();
+  });
   revalidatePath("/teams");
-  return { subRoles: getUserSubRoles(user.id) };
+  return { subRoles: await getUserSubRoles(user.id) };
 }
 
 // 刪除副職：副職為選填，只把引用它的設定改回「無副職」，不移除玩家的主團
 export async function deleteSubRoleAction(subRoleId: number): Promise<SubRoleListResult> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  const row = db
-    .prepare("SELECT name FROM user_sub_roles WHERE id = ? AND user_id = ?")
-    .get(subRoleId, user.id) as { name: string } | undefined;
+  const row = await db
+    .selectFrom("user_sub_roles")
+    .select("name")
+    .where("id", "=", subRoleId)
+    .where("user_id", "=", user.id)
+    .executeTakeFirst();
   if (!row) return { error: "找不到副職" };
-  db.transaction(() => {
-    db.prepare("DELETE FROM user_sub_roles WHERE id = ?").run(subRoleId);
-    db.prepare(
-      "UPDATE team_assignments SET sub_role = NULL WHERE user_id = ? AND sub_role = ?"
-    ).run(user.id, row.name);
-    db.prepare(
-      `UPDATE match_team_assignments SET sub_role = NULL
-       WHERE sub_role = ? AND match_id IN (SELECT id FROM matches WHERE user_id = ?)`
-    ).run(row.name, user.id);
-  })();
+  await db.transaction().execute(async (trx) => {
+    await trx.deleteFrom("user_sub_roles").where("id", "=", subRoleId).execute();
+    await trx
+      .updateTable("team_assignments")
+      .set({ sub_role: null })
+      .where("user_id", "=", user.id)
+      .where("sub_role", "=", row.name)
+      .execute();
+    await trx
+      .updateTable("match_team_assignments")
+      .set({ sub_role: null })
+      .where("sub_role", "=", row.name)
+      .where("match_id", "in", ownedMatchIds(user.id))
+      .execute();
+  });
   revalidatePath("/teams");
-  return { subRoles: getUserSubRoles(user.id) };
+  return { subRoles: await getUserSubRoles(user.id) };
 }
