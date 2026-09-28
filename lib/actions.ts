@@ -18,7 +18,7 @@ import { createSession, destroySession, getCurrentUser } from "./auth";
 import { decodeCsv, parseGuildWarCsv } from "./parse";
 import { getUserSubRoles, getUserTeams } from "./data";
 import { UNASSIGNED_LABEL } from "./types";
-import type { UserSubRole, UserTeam } from "./types";
+import type { TeamMap, UserSubRole, UserTeam } from "./types";
 
 export interface ActionState {
   error?: string;
@@ -237,7 +237,7 @@ async function upsertMatchTeamAssignment(
   mainTeam: string,
   subRole: string | null
 ): Promise<void> {
-  const update = { main_team: mainTeam, sub_role: subRole };
+  const update = { main_team: mainTeam, sub_role: subRole, updated_at: Date.now() };
   const q = db
     .insertInto("match_team_assignments")
     .values({ match_id: matchId, player_name: playerName, ...update });
@@ -274,6 +274,56 @@ export async function clearTeamAssignmentAction(playerName: string): Promise<voi
     .where("player_name", "=", playerName.trim())
     .execute();
   revalidatePath("/teams");
+}
+
+// 第一次開啟編輯時，依玩家載入最近的本場調整；保留本場既有設定。
+// 初始化與複製在同一交易中完成，之後還原成統一配置也不會再次被歷史覆蓋。
+export async function loadMatchTeamDefaultsAction(matchPublicId: string): Promise<TeamMap> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  const matchId = await requireOwnedMatch(user.id, matchPublicId);
+  const assignments = await db.transaction().execute(async (trx) => {
+    const claimed = await trx.updateTable("matches")
+      .set({ team_defaults_loaded: 1 })
+      .where("id", "=", matchId)
+      .where("team_defaults_loaded", "=", 0)
+      .executeTakeFirst();
+    const current = await trx.selectFrom("match_team_assignments")
+      .select(["player_name", "main_team", "sub_role"])
+      .where("match_id", "=", matchId)
+      .execute();
+    const map: TeamMap = Object.fromEntries(current.map((r) => [
+      r.player_name, { mainTeam: r.main_team, subRole: r.sub_role },
+    ]));
+    if (Number(claimed.numUpdatedRows) === 0) return map;
+
+    const history = await trx.selectFrom("match_team_assignments as a")
+      .innerJoin("matches as m", "m.id", "a.match_id")
+      .select(["a.player_name", "a.main_team", "a.sub_role", "a.updated_at"])
+      .where("m.user_id", "=", user.id)
+      .where("m.id", "!=", matchId)
+      .where("a.player_name", "in", (eb) => eb.selectFrom("players")
+        .select("name").where("match_id", "=", matchId).where("side", "=", 0))
+      .orderBy("a.updated_at", "desc")
+      .orderBy("m.created_at", "desc")
+      .orderBy("m.id", "desc")
+      .execute();
+    const seen = new Set(current.map((r) => r.player_name));
+    const defaults = history.filter((r) => {
+      if (seen.has(r.player_name)) return false;
+      seen.add(r.player_name);
+      return true;
+    }).map((r) => ({ ...r, match_id: matchId, updated_at: Number(r.updated_at) }));
+    for (let i = 0; i < defaults.length; i += 50) {
+      await trx.insertInto("match_team_assignments").values(defaults.slice(i, i + 50)).execute();
+    }
+    for (const r of defaults) {
+      map[r.player_name] = { mainTeam: r.main_team, subRole: r.sub_role };
+    }
+    return map;
+  });
+  revalidatePath(`/match/${matchPublicId}`);
+  return assignments;
 }
 
 // 單場分團調整（覆蓋統一陣容配置；規則與統一配置相同）

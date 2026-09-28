@@ -33,6 +33,7 @@ export interface MatchesTable {
   enemy_count: number;
   share_token: string | null;
   created_at: Generated<Date | string>;
+  team_defaults_loaded: Generated<number>; // 首次開啟本場調整後，不再自動套用歷史配置
 }
 export interface PlayersTable {
   id: Generated<number>;
@@ -62,6 +63,7 @@ export interface MatchTeamAssignmentsTable {
   player_name: string;
   main_team: string;
   sub_role: string | null;
+  updated_at: Generated<number>; // 最後調整時間（epoch ms）；舊資料為 0
 }
 export interface UserTeamsTable {
   id: Generated<number>;
@@ -216,6 +218,21 @@ async function ensureMatchPublicId(): Promise<void> {
   }
 }
 
+// 舊資料沒有調整時間，保留為 0，讀取歷史時再以場次時間排序。
+async function ensureTeamDefaultsColumns(): Promise<void> {
+  const tables = await db.introspection.getTables();
+  if (!tables.find((t) => t.name === "matches")?.columns.some((c) => c.name === "team_defaults_loaded")) {
+    await db.schema.alterTable("matches")
+      .addColumn("team_defaults_loaded", "integer", (c) => c.notNull().defaultTo(0))
+      .execute();
+  }
+  if (!tables.find((t) => t.name === "match_team_assignments")?.columns.some((c) => c.name === "updated_at")) {
+    await db.schema.alterTable("match_team_assignments")
+      .addColumn("updated_at", "bigint", (c) => c.notNull().defaultTo(0))
+      .execute();
+  }
+}
+
 async function ensureSchema(): Promise<void> {
   await db.schema
     .createTable("users")
@@ -251,6 +268,7 @@ async function ensureSchema(): Promise<void> {
     .addColumn("enemy_count", "integer", (c) => c.notNull())
     .addColumn("share_token", keyText(), (c) => c.unique())
     .addColumn("created_at", timestampType(), (c) => c.notNull().defaultTo(nowDefault()))
+    .addColumn("team_defaults_loaded", "integer", (c) => c.notNull().defaultTo(0))
     .execute();
 
   await db.schema
@@ -302,7 +320,10 @@ async function ensureSchema(): Promise<void> {
     .addColumn("main_team", sql`text`, (c) => c.notNull())
     .addColumn("sub_role", sql`text`)
     .addPrimaryKeyConstraint("pk_match_team_assignments", ["match_id", "player_name"])
+    .addColumn("updated_at", "bigint", (c) => c.notNull().defaultTo(0))
     .execute();
+
+  await ensureTeamDefaultsColumns();
 
   await db.schema
     .createTable("user_teams")

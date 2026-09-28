@@ -15,6 +15,7 @@ import type { MatchDetail, PlayerStats, TeamMap } from "@/lib/types";
 import { UNASSIGNED_LABEL, teamLabel } from "@/lib/types";
 import {
   clearMatchTeamAssignmentAction,
+  loadMatchTeamDefaultsAction,
   setMatchTeamAssignmentAction,
 } from "@/lib/actions";
 import { fmtAvg, fmtCompact, fmtDate, fmtInt, fmtKda, kdaOf } from "@/lib/format";
@@ -778,28 +779,57 @@ function TeamsTab({
   const editSort = useSortable("team", false);
   const [isPending, startTransition] = useTransition();
 
+  const openEditor = () => {
+    setEditError(null);
+    startTransition(async () => {
+      try {
+        const saved = await loadMatchTeamDefaultsAction(match.id);
+        setOverrides(saved);
+        setEditMode(true);
+      } catch {
+        setEditError("載入分團配置失敗，請稍後再試。");
+      }
+    });
+  };
+
   const setOverride = (name: string, mainTeam: string, subRole: string | null) => {
+    const previous = overrides;
     setOverrides((m) => ({ ...m, [name]: { mainTeam, subRole } }));
     setEditError(null);
     startTransition(async () => {
-      const res = await setMatchTeamAssignmentAction(
-        match.id,
-        name,
-        mainTeam,
-        subRole
-      );
-      if (res.error) setEditError(res.error);
+      try {
+        const res = await setMatchTeamAssignmentAction(
+          match.id,
+          name,
+          mainTeam,
+          subRole
+        );
+        if (res.error) {
+          setOverrides(previous);
+          setEditError(res.error);
+        }
+      } catch {
+        setOverrides(previous);
+        setEditError("儲存分團配置失敗，請稍後再試。");
+      }
     });
   };
 
   const clearOverride = (name: string) => {
+    const previous = overrides;
+    setEditError(null);
     setOverrides((m) => {
       const next = { ...m };
       delete next[name];
       return next;
     });
     startTransition(async () => {
-      await clearMatchTeamAssignmentAction(match.id, name);
+      try {
+        await clearMatchTeamAssignmentAction(match.id, name);
+      } catch {
+        setOverrides(previous);
+        setEditError("切換統一配置失敗，請稍後再試。");
+      }
     });
   };
 
@@ -864,14 +894,16 @@ function TeamsTab({
             </a>
             」統一設定，或
             <button
-              onClick={() => setEditMode(true)}
-              className="mx-1 text-accent hover:underline cursor-pointer"
+              onClick={openEditor}
+              disabled={isPending}
+              className="mx-1 text-accent hover:underline cursor-pointer disabled:opacity-50"
             >
-              只調整本場分團
+              {isPending ? "載入中…" : "只調整本場分團"}
             </button>
             。
           </>
         )}
+        {editError && <p className="mt-2 text-sm text-bad" role="alert">{editError}</p>}
       </div>
     );
   }
@@ -890,19 +922,20 @@ function TeamsTab({
               </span>
             )}
             <button
-              onClick={() => setEditMode((e) => !e)}
-              className={`rounded-md px-3 py-1.5 text-sm cursor-pointer ${
+              onClick={() => editMode ? setEditMode(false) : openEditor()}
+              disabled={isPending}
+              className={`rounded-md px-3 py-1.5 text-sm cursor-pointer disabled:opacity-50 ${
                 editMode
                   ? "bg-accent text-white"
                   : "border border-bdr text-ink2 hover:bg-wash"
               }`}
             >
-              {editMode ? "完成調整" : "調整本場分團"}
+              {editMode ? "完成調整" : isPending ? "載入中…" : "調整本場分團"}
             </button>
           </div>
         </div>
       )}
-      {editError && <p className="text-sm text-bad">{editError}</p>}
+      {editError && <p className="text-sm text-bad" role="alert">{editError}</p>}
 
       {editMode && isOwner && (
         <section className="rounded-xl border border-bdr bg-surface p-5">
@@ -915,6 +948,9 @@ function TeamsTab({
               className="w-44 rounded-md border border-bdr bg-page px-3 py-1.5 text-sm outline-none focus:border-accent"
             />
           </div>
+          <p className="mb-3 text-xs text-muted">
+            首次調整會依玩家帶入最近一次的本場配置；本場已有設定則保留，沒有歷史配置則使用統一配置。可逐位選擇「使用統一配置」，變更即時儲存。
+          </p>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -986,11 +1022,13 @@ function TeamsTab({
                               {teamNames.map((t) => (
                                 <button
                                   key={t}
+                                  disabled={isPending}
+                                  aria-pressed={eff?.mainTeam === t}
                                   onClick={() => {
                                     if (eff?.mainTeam === t) return;
                                     setOverride(p.name, t, eff?.subRole ?? null);
                                   }}
-                                  className={`rounded-md px-2.5 py-1 text-xs cursor-pointer ${
+                                  className={`rounded-md px-2.5 py-1 text-xs cursor-pointer disabled:opacity-50 ${
                                     eff?.mainTeam === t
                                       ? "bg-accent text-white"
                                       : "border border-bdr text-ink2 hover:bg-wash"
@@ -1015,9 +1053,10 @@ function TeamsTab({
                                     const next = eff.subRole === s ? null : s;
                                     setOverride(p.name, eff.mainTeam, next);
                                   }}
-                                  disabled={!eff}
+                                  disabled={!eff || isPending}
+                                  aria-pressed={eff?.subRole === s}
                                   title={eff ? undefined : "請先選擇主團"}
-                                  className={`rounded-md px-2.5 py-1 text-xs ${
+                                  className={`rounded-md px-2.5 py-1 text-xs disabled:opacity-50 ${
                                     eff?.subRole === s
                                       ? "bg-accent text-white cursor-pointer"
                                       : eff
@@ -1034,20 +1073,19 @@ function TeamsTab({
                         <td className="py-1.5 pr-3 text-xs">
                           {isOverridden ? (
                             <span className="text-accent">本場調整</span>
-                          ) : eff ? (
-                            <span className="text-muted">統一配置</span>
                           ) : (
-                            <span className="text-muted">—</span>
+                            <span className="text-muted">{eff ? "統一配置" : "統一配置（未分團）"}</span>
                           )}
                         </td>
                         <td className="py-1.5 text-right">
                           {isOverridden && (
                             <button
                               onClick={() => clearOverride(p.name)}
-                              className="text-xs text-muted hover:text-bad cursor-pointer"
+                              disabled={isPending}
+                              className="text-xs text-muted hover:text-accent cursor-pointer disabled:opacity-50"
                               title="移除本場調整，回到統一配置"
                             >
-                              還原
+                              使用統一配置
                             </button>
                           )}
                         </td>

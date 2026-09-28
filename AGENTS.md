@@ -11,11 +11,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 npm run dev          # 開發伺服器
 npm run build        # production build（同時做 TypeScript 型別檢查——本專案沒有獨立的 typecheck 指令）
+npm run build -- --webpack # 環境限制導致 Turbopack 無法建置時，可用 Webpack 完成相同建置與型別檢查
 npm start            # 跑 production build（port 3000）
 npm run lint         # ESLint
 ```
 
-沒有單元測試框架。驗證靠兩個腳本（需先 `npm start` 起伺服器）：
+沒有單元測試框架。既有整站 UI 驗證使用以下兩個腳本（需先 `npm start` 起伺服器）：
 
 ```bash
 node scripts/seed-test.mjs   # 建 testuser/test123456 帳號、匯入根目錄兩個 CSV、開啟一場分享
@@ -25,7 +26,20 @@ node scripts/ui-test.mjs <shareToken>   # Playwright 驅動系統 Chrome (/usr/b
                                         # 跑完整 UI 流程並截圖到 /tmp/shots/
 ```
 
-測試完把 testuser 刪掉（`DELETE FROM users WHERE username='testuser'`，FK cascade 會清掉附屬資料；SQLite 可用 `node -e "require('better-sqlite3')('data/app.db')..."`）。**使用者可能有真實帳號資料在 `data/app.db`，不要整檔刪除。**
+分團配置回歸測試（先完成 build，腳本會自動起獨立 Next.js 伺服器與 Chrome，不需另外 `npm start`）：
+
+```bash
+node scripts/team-defaults-test.mjs
+# SQLite：自動建立並清除暫存資料庫，不使用 data/app.db
+DB_DIALECT=mysql TEST_DATABASE_URL=mysql://app:app@127.0.0.1:33070/team_test node scripts/team-defaults-test.mjs
+DB_DIALECT=postgres TEST_DATABASE_URL=postgres://app:app@127.0.0.1:54370/team_test node scripts/team-defaults-test.mjs
+```
+
+MySQL／PostgreSQL 的 `TEST_DATABASE_URL` **必須是空的測試資料庫**，腳本會拒絕已有資料表的資料庫；不讀取 `DATABASE_URL` 作為測試目標。Docker 建立與清除測試容器的完整指令見 `README.md`「開發驗證」。每次重跑需重新建立空資料庫；測試後清除本次容器及資料。`CHROME_PATH` 可覆寫預設的 `/usr/bin/google-chrome`。
+
+此腳本實際建立舊版 schema 與配置，驗證啟動遷移、依最後儲存時間載入、本場既有設定優先、無歷史時沿用統一配置、切回統一配置後重開／重新整理仍保留、統一配置後續變更、主團與副職儲存、帳號與我方玩家隔離、無分團入口，以及分享唯讀與內容一致性。2026-09-28 已用同一份 production build 通過 SQLite、Docker MySQL 8.4.11（`utf8mb4`）與 PostgreSQL 16.15 的完整流程。
+
+執行 `seed-test.mjs` 測試完把 testuser 刪掉（`DELETE FROM users WHERE username='testuser'`，FK cascade 會清掉附屬資料；SQLite 可用 `node -e "require('better-sqlite3')('data/app.db')..."`）。**使用者可能有真實帳號資料在 `data/app.db`，不要整檔刪除。**
 
 重啟 production 伺服器的正確方式（`lsof -sTCP:LISTEN` 在此環境抓不到 next-server，殺不乾淨會 EADDRINUSE，舊伺服器配新 build 會出現 chunk 500）：
 
@@ -44,7 +58,7 @@ Next.js 16（App Router、Turbopack）+ TypeScript + Tailwind 4 + Kysely（SQLit
 - **`lib/db.ts`**：Kysely 連線單例（globalThis 快取），依 `DB_DIALECT`（sqlite 預設／mysql／postgres）＋`DATABASE_URL` 建立對應 dialect；驅動 better-sqlite3／mysql2／pg 以 `require` 延遲載入，`next.config.ts` 的 `serverExternalPackages` 必須列出三者並保持 `output: "standalone"`。**所有查詢前先 `await ready()`**（第一次呼叫時以 Kysely schema builder 建表，`createTable().ifNotExists()`；失敗會清掉快取讓下次重試）。**方言差異只允許出現在這個檔案與 `actions.ts` 的 upsert helper**：自增主鍵（PG `serial`／其餘 `integer autoIncrement`）、取回 id（PG `returning`／其餘 `insertId`，見 `insertReturningId`）、字串主鍵/唯一鍵在 MySQL 需 `varchar(191)`（`keyText()`）、時間戳型別（`timestamptz`／`datetime`／`text`）、`CREATE INDEX IF NOT EXISTS`（MySQL 不支援，`createIndexIfMissing` 查 information_schema）、insert-ignore（MySQL `.ignore()`／其餘 `onConflict().doNothing()`）、upsert（MySQL `onDuplicateKeyUpdate`／其餘 `onConflict().doUpdateSet`）。`bigint` 欄位（傷害/治療/expires_at）在 pg 可能回字串，`data.ts` 一律 `Number()`；`created_at` 用 `toIso()` 統一成 ISO 字串。資料層全部 async，頁面要 `await`。
 - **本機驗證三方言**：`docker run` 起 `postgres:16-alpine`／`mysql:8`（記得 `--character-set-server=utf8mb4`），用 `DB_DIALECT=… DATABASE_URL=… PORT=3010 npm start` 另開伺服器，跑同一份 Playwright 腳本即可；三者共用同一次 `npm run build`。
 - **`lib/parse.ts`**：結算 CSV 解析。格式：兩個幫會區塊，區塊開頭是 2 欄列（`"幫會名","人數"`），之後為 12 欄玩家列；逐行掃描辨識，不靠固定行號。編碼 UTF-8，出現替換字元時 fallback GB18030。
-- **`lib/actions.ts`**（`"use server"`）：所有寫入操作——註冊/登入/登出、上傳、刪除、分享開關。每個動作都做 session 與場次擁有權檢查。表單用 `useActionState`，回傳 `{error?}`。
+- **`lib/actions.ts`**（`"use server"`）：所有寫入操作——註冊/登入/登出、上傳、刪除、分享開關、分團配置。每個動作都做 session 與場次擁有權檢查。表單用 `useActionState`，回傳 `{error?}`。`loadMatchTeamDefaultsAction` 在首次開啟本場編輯時，以同一交易標記初始化並複製歷史配置，回傳本場完整 `TeamMap`。
 - **`lib/auth.ts`**：自建 session（`session` cookie ↔ sessions 資料表，bcryptjs 雜湊）。
 - **`lib/data.ts`**：唯讀查詢，把 snake_case 資料列轉成 `lib/types.ts` 的 camelCase 型別。
 
@@ -65,5 +79,7 @@ Next.js 16（App Router、Turbopack）+ TypeScript + Tailwind 4 + Kysely（SQLit
 - 欄位語意：**重傷 = 死亡次數**；KDA =（擊敗＋助攻）÷ max(重傷, 1)（`lib/format.ts` 的 `kdaOf`）。
 - **職業專屬指標**（`lib/types.ts` 的 `metricAppliesToClass`）：化羽/清泉只屬於素問與潮光、焚骨只屬於九靈。顯示位置規則：**同職業比較**（與同職業平均、與對方同職業平均）、**本團貢獻**、**與各團對比**與職業/成員表格要依職業顯示；只有**全隊貢獻佔比**不顯示這兩個指標（全隊跨職業佔比無意義）。在本團貢獻與各團對比中，這兩個指標的比較對象**只算該團同職業成員**（焚骨只跟本團九靈比、化羽/清泉只跟本團同為素問或同為潮光的人比），佔比分母與「第 x/y 名」的 y 都用同職業人數。
 - **分團**（以「使用者＋玩家名字」為鍵、跨場次共用的 `team_assignments`，加上以「場次＋玩家名字」為鍵的單場覆寫 `match_team_assignments`，**優先級：本場調整 > 統一陣容配置**，合併在 `MatchView` 的 `effectiveTeams`）：**主團與副職都是使用者自訂清單**（`user_teams`／`user_sub_roles`，註冊時種入預設進攻/機動/防守與保鑣/扛拆/空拆；既有帳號由 `lib/db.ts` 的 `runOnce` 一次性遷移補上，`schema_meta` 記錄已跑過）。主團必選單選、副職可不選；server action 以清單驗證。改名會連動 `team_assignments`／`match_team_assignments`；刪主團會清掉引用者的分團，刪副職只把引用者設為無副職。`UNASSIGNED_LABEL`（未分團）是保留名；顯示用 `teamLabel()` 在名稱未以團/隊/組結尾時補「團」。統一配置在 `/teams`（`TeamConfig` 內的 `NameListEditor` 同時管兩份清單），單場調整在戰報「分團分析」分頁的編輯模式（僅擁有者）。戰報分團分頁與玩家詳情的團隊區塊都是用名字 join；分享頁由場次反查擁有者設定與清單（`getTeamAssignmentsByMatch`／`getUserTeamsByMatch`／`getUserSubRolesByMatch`）再疊上該場覆寫。
+- **本場配置預設載入**：只在擁有者首次點選某場的「調整本場分團」（含尚未分團時的入口）觸發。保留本場已有覆寫，其他我方玩家依名字載入**同帳號其他場次最近儲存的配置**（主團與副職一起複製，副職 `null` 也要保留）；沒有歷史則沿用統一配置。單純瀏覽戰報或分享頁不會觸發。`matches.team_defaults_loaded` 為預設 `0` 的整數旗標，初始化與複製在同一交易完成；後續開啟只讀本場已儲存的結果，避免「使用統一配置」後再被歷史覆蓋。切回統一配置是刪除該玩家的本場覆寫，仍會跟隨統一配置後續變更；統一配置不存在時顯示未分團。
+- **歷史調整時間與遷移**：`match_team_assignments.updated_at` 為 epoch 毫秒的 `bigint`；手動儲存使用 `Date.now()`，自動複製沿用來源時間。歷史先依 `updated_at` 降冪，再依場次 `created_at`、內部 id 降冪選每位玩家第一筆；內部 id 不送到 client。舊資料缺少時間時為 `0`，以場次上傳時間與順序決定先後。`lib/db.ts` 的 `ensureTeamDefaultsColumns()` 透過 Kysely introspection 補上這兩個欄位，保留既有資料；PostgreSQL 回傳的 `bigint` 在複製前以 `Number()` 正規化。
 - **配色是經過色盲驗證的固定規則**：我方＝藍 `var(--ally)`、對方＝橘 `var(--enemy)`（檢視對方視角的詳情時兩色互換，見 modal 內的 `ownColor`/`oppColor`）。設計 token 全在 `app/globals.css`（明暗雙模式，經 `@theme inline` 映射成 Tailwind 類別如 `bg-surface`、`text-ink`、`border-bdr`），新 UI 用這些 token，不要另外挑色。
 - 大數值以 `fmtCompact` 壓縮（萬/億），完整值放 `title` 屬性；表格數字加 `tabular-nums`。

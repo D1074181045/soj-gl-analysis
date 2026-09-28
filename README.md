@@ -18,6 +18,8 @@
 - **玩家跨場比較**：搜尋任一玩家，查看其在各場次的表現趨勢與明細
 - 繁體中文介面、明暗雙主題（跟隨系統設定）、色盲友善配色（我方藍／對方橘）
 
+首次點選某場的「調整本場分團」時，會依玩家名字帶入此帳號最近儲存的本場分團配置（含副職）。本場已有調整的玩家保留原設定，沒有歷史配置的玩家沿用統一配置。每位玩家都可點「使用統一配置」切回，重新開啟或重新整理後也會保留此選擇。載入與修改皆即時儲存；只瀏覽戰報或分享頁不會載入歷史配置。舊資料沒有調整時間時，以場次上傳時間及順序判斷最近配置。
+
 ## 技術棧
 
 Next.js 16（App Router、Server Actions）・TypeScript・Tailwind CSS 4・Kysely（SQLite／MySQL／PostgreSQL）・Recharts
@@ -96,9 +98,29 @@ node scripts/seed-test.mjs
 node scripts/ui-test.mjs <shareToken>
 # Playwright 驅動系統 Chrome 跑完整 UI 流程（登入→戰報三分頁→玩家詳情→跨場比較→分享頁）
 # 截圖輸出到 /tmp/shots/
+
+node scripts/team-defaults-test.mjs
+# 需先 npm run build；自動啟動獨立伺服器與暫存 SQLite，驗證歷史分團載入、統一配置、帳號隔離與舊 schema 升級
 ```
 
-驗證完可刪除測試帳號：`DELETE FROM users WHERE username='testuser'`（外鍵 cascade 會一併清除其場次資料）。
+同一份分團測試也支援 MySQL／PostgreSQL，共用已完成的 production build。`TEST_DATABASE_URL` 必須指向**空的測試資料庫**；腳本會拒絕已有資料表的資料庫。可用 Docker 建立每次測試專用的資料庫：
+
+```bash
+docker run -d --rm --name team-test-mysql -p 127.0.0.1:33070:3306 \
+  -e MYSQL_ROOT_PASSWORD=testroot -e MYSQL_USER=app -e MYSQL_PASSWORD=app -e MYSQL_DATABASE=team_test \
+  mysql:8 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+docker run -d --rm --name team-test-postgres -p 127.0.0.1:54370:5432 \
+  -e POSTGRES_USER=app -e POSTGRES_PASSWORD=app -e POSTGRES_DB=team_test postgres:16-alpine
+
+# 等兩個資料庫啟動完成後執行
+DB_DIALECT=mysql TEST_DATABASE_URL=mysql://app:app@127.0.0.1:33070/team_test node scripts/team-defaults-test.mjs
+DB_DIALECT=postgres TEST_DATABASE_URL=postgres://app:app@127.0.0.1:54370/team_test node scripts/team-defaults-test.mjs
+
+# 清除本次測試容器及其資料；下次測試重新建立空容器
+docker stop team-test-mysql team-test-postgres
+```
+
+執行 `seed-test.mjs` 驗證後可刪除測試帳號：`DELETE FROM users WHERE username='testuser'`（外鍵 cascade 會一併清除其場次資料）。
 
 ## 專案結構
 
